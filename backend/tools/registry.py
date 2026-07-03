@@ -57,11 +57,7 @@ def order_status(order_id: str) -> dict[str, Any]:
 
 
 def product_search(query: str, top_k: int = 5) -> list[dict[str, Any]]:
-    """Naive substring search over the product catalog.
-
-    Supports both the lean shape (``{name, price, stock}``) and the
-    enriched shape used in tests/fixtures (``{sku, name, category, tags, ...}``).
-    """
+    """Naive substring + tag search across the product catalog."""
     products = _maybe_reload("products", "products.json")
     q = query.lower().strip()
     scored: list[tuple[int, dict[str, Any]]] = []
@@ -69,15 +65,15 @@ def product_search(query: str, top_k: int = 5) -> list[dict[str, Any]]:
         hay = " ".join(
             [
                 p["name"].lower(),
-                p.get("category", "").lower(),
+                p["category"].lower(),
                 " ".join(p.get("tags", [])).lower(),
-                p.get("sku", "").lower(),
+                p["sku"].lower(),
             ]
         )
         score = sum(1 for token in q.split() if token in hay)
         if score > 0:
             scored.append((score, p))
-    scored.sort(key=lambda x: (-x[0], x[1]["name"]))
+    scored.sort(key=lambda x: (-x[0], x[1]["sku"]))
     return [p for _, p in scored[:top_k]]
 
 

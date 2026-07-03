@@ -1,0 +1,29 @@
+# Local Tempo — receives OTLP HTTP on :4318 and gRPC on :4317.
+# Memory backend so we don't need S3/GCS for a single-node demo.
+server:
+  http_listen_address: 0.0.0.0
+  http_listen_port: 4318   # OTLP HTTP  — what the app exports to
+  grpc_listen_address: 0.0.0.0
+  grpc_listen_port: 4317  # OTLP gRPC
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        http: {}
+        grpc: {}
+
+ingester:
+  max_block_duration: 5m
+
+compactor:
+  compaction:
+    block_retention: 48h
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/traces
+    pool:
+      max_workers: 100

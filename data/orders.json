@@ -1,6 +1,6 @@
-[
-  {"order_id": "A1001", "customer": "ada", "status": "shipped", "eta_days": 2, "total_usd": 89.50, "items": ["SKU-001", "SKU-014"]},
-  {"order_id": "A1002", "customer": "linus", "status": "processing", "eta_days": 5, "total_usd": 124.00, "items": ["SKU-007"]},
-  {"order_id": "A1003", "customer": "grace", "status": "delivered", "eta_days": 0, "total_usd": 42.10, "items": ["SKU-002", "SKU-002"]},
-  {"order_id": "A1004", "customer": "ada", "status": "cancelled", "eta_days": 0, "total_usd": 0.00, "items": []}
+﻿[
+  { "order_id": "ORD001", "status": "Shipped",    "estimated_delivery": "2026-07-02" },
+  { "order_id": "ORD002", "status": "Processing", "estimated_delivery": "2026-07-05" },
+  { "order_id": "ORD003", "status": "Delivered",  "estimated_delivery": "2026-06-28" },
+  { "order_id": "ORD004", "status": "Cancelled",  "estimated_delivery": "2026-07-01" }
 ]

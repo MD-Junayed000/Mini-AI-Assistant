@@ -1,7 +1,6 @@
-[
-  {"sku": "SKU-001", "name": "Wireless Mouse",      "category": "peripherals", "price_usd": 24.99, "stock": 142, "tags": ["ergonomic", "bluetooth"]},
-  {"sku": "SKU-002", "name": "USB-C Hub (7-port)", "category": "peripherals", "price_usd": 39.99, "stock": 87,  "tags": ["usb-c", "travel"]},
-  {"sku": "SKU-007", "name": "Mechanical Keyboard", "category": "peripherals", "price_usd": 119.00, "stock": 31, "tags": ["tactile", "rgb"]},
-  {"sku": "SKU-014", "name": "Laptop Stand",        "category": "accessories", "price_usd": 29.50, "stock": 200, "tags": ["aluminum", "adjustable"]},
-  {"sku": "SKU-021", "name": "Webcam 1080p",        "category": "peripherals", "price_usd": 59.00, "stock": 0,   "tags": ["autofocus", "mic"]}
+﻿[
+  { "name": "Wireless Mouse",      "price": 25, "stock": 12 },
+  { "name": "Mechanical Keyboard", "price": 70, "stock": 5  },
+  { "name": "USB-C Hub (7-port)",  "price": 40, "stock": 0  },
+  { "name": "Laptop Stand",        "price": 30, "stock": 24 }
 ]

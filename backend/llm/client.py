@@ -64,7 +64,16 @@ class OllamaCloudChatClient:
     async def _call_once(self, model: str, messages: list[dict[str, str]]) -> str:
         """One chat call. Retries on transient httpx errors."""
         tr = tracer()
-        with tr.start_as_current_span("llm.chat") if hasattr(tr, "start_as_current_span") else _nullctx():
+        span_cm = (
+            tr.start_as_current_span("llm.chat") if hasattr(tr, "start_as_current_span") else _nullctx()
+        )
+        with span_cm as span:
+            if span is not None and hasattr(span, "set_attribute"):
+                try:
+                    span.set_attribute("llm.model", model)
+                    span.set_attribute("llm.prompt_messages", len(messages))
+                except Exception:  # noqa: BLE001
+                    pass
             try:
                 with STAGE_LATENCY.labels(stage="llm").time():
                     resp = await self._client.chat.completions.create(

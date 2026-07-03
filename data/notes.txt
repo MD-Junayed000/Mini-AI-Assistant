@@ -1,0 +1,37 @@
+Wireless Mouse (SKU-001)
+========================
+
+The Wireless Mouse is an ergonomic Bluetooth mouse with a silent-click sensor.
+Battery life is approximately 18 months on a single AA cell. The mouse pairs
+via Bluetooth 5.0 and supports both Windows and macOS without additional
+drivers. Pairing: hold the small button on the base for three seconds, then
+select the device from the host's Bluetooth menu.
+
+USB-C Hub (SKU-002)
+==================
+
+A 7-port USB-C hub providing HDMI, two USB-A 3.0, SD, microSD, 100 W PD
+passthrough, and gigabit Ethernet. The hub draws bus power and is rated for
+5 Gbps on the USB-A ports. Compatible with macOS, Windows, and Linux.
+
+Mechanical Keyboard (SKU-007)
+============================
+
+Tactile mechanical keyboard with hot-swappable switches, RGB backlight, and
+USB-C detachable cable. The keyboard supports n-key rollover over USB and is
+programmable through an open firmware tool.
+
+Laptop Stand (SKU-014)
+======================
+
+Aluminum laptop stand with six height adjustments. Supports laptops up to 17
+inches and 4.5 kg. The stand folds flat for travel and ships with a felt
+sleeve.
+
+Returns & Refunds
+=================
+
+Items may be returned within 30 days of delivery for a full refund. The
+customer is responsible for return shipping unless the item arrived damaged
+or defective. Refunds are issued to the original payment method within five
+business days of the warehouse receiving the return.

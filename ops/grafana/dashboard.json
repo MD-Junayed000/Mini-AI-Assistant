@@ -1,0 +1,99 @@
+{
+  "title": "Mini AI Assistant",
+  "uid": "mini-ai-assistant",
+  "schemaVersion": 39,
+  "version": 1,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Request rate",
+      "type": "graph",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum by (endpoint) (rate(http_requests_total[1m]))", "legendFormat": "{{endpoint}}" }
+      ]
+    },
+    {
+      "id": 2,
+      "title": "Error rate",
+      "type": "graph",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum by (status) (rate(http_requests_total{status=~\"5..\"}[1m]))", "legendFormat": "{{status}}" }
+      ]
+    },
+    {
+      "id": 3,
+      "title": "p50 / p99 latency by stage",
+      "type": "graph",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "histogram_quantile(0.5, sum by (le, stage) (rate(request_stage_seconds_bucket[5m])))", "legendFormat": "p50 {{stage}}" },
+        { "expr": "histogram_quantile(0.99, sum by (le, stage) (rate(request_stage_seconds_bucket[5m])))", "legendFormat": "p99 {{stage}}" }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Answerability decisions",
+      "type": "graph",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum by (decision) (rate(answerability_decisions_total[5m]))", "legendFormat": "{{decision}}" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Tool calls",
+      "type": "graph",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum by (tool, outcome) (rate(tool_calls_total[1m]))", "legendFormat": "{{tool}} · {{outcome}}" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Top rerank score (p50)",
+      "type": "graph",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "histogram_quantile(0.5, sum by (le) (rate(rerank_top_score_bucket[5m])))", "legendFormat": "p50 rerank_top" }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Health (up/down)",
+      "type": "stat",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "health_status", "legendFormat": "{{component}}" }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Rate-limit hits",
+      "type": "graph",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum by (endpoint) (rate(rate_limit_hits_total[1m]))", "legendFormat": "{{endpoint}}" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Prompt-injection events",
+      "type": "graph",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum by (surface) (rate(prompt_injection_total[5m]))", "legendFormat": "{{surface}}" }
+      ]
+    },
+    {
+      "id": 10,
+      "title": "Ingest throughput",
+      "type": "graph",
+      "datasource": "Prometheus",
+      "targets": [
+        { "expr": "sum by (source_type) (rate(ingest_documents_total[5m]))", "legendFormat": "{{source_type}}" }
+      ]
+    }
+  ]
+}

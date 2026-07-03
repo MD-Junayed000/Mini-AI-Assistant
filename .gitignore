@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.env
+.chroma/*.bin
+.chroma/*.pkl
+logs/*.log*
+.idea/
+.vscode/
+.pytest_cache/
+.coverage

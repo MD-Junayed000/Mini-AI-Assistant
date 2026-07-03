@@ -1,0 +1,18 @@
+[project]
+name = "mini-ai-assistant"
+version = "0.2.2"
+description = "RAG + tool-calling assistant built for the take-home assignment (v2.2, observability-hardened)."
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: requires live HF/Ollama/Mongo credentials",
+    "slow: large corpus / load tests",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

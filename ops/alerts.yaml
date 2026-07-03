@@ -1,0 +1,44 @@
+groups:
+  - name: ai_assistant.rules
+    rules:
+      - alert: HighLatencyLLM
+        expr: histogram_quantile(0.99, sum by (le) (rate(request_stage_seconds_bucket{stage="llm"}[5m]))) > 8
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: "p99 LLM latency > 8s for 5m — Ollama Cloud likely degraded"
+
+      - alert: HighFallbackRate
+        expr: sum(rate(answerability_decisions_total{decision="fallback"}[10m])) / sum(rate(answerability_decisions_total[10m])) > 0.30
+        for: 10m
+        labels: { severity: warn }
+        annotations:
+          summary: "RAG fallback rate > 30% for 10m — retrieval likely regressing"
+
+      - alert: HighErrorRate
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m])) > 0.01
+        for: 5m
+        labels: { severity: page }
+        annotations:
+          summary: "HTTP 5xx rate > 1% for 5m"
+
+      - alert: VectorStoreDown
+        expr: up{job="chroma"} == 0 or absent(up{job="chroma"})
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "Chroma not responding to scrape"
+
+      - alert: HealthCheckDegraded
+        expr: sum by (component) (health_status{status="down"} == 1) > 0
+        for: 2m
+        labels: { severity: page }
+        annotations:
+          summary: "Dependency {{ $labels.component }} reporting down"
+
+      - alert: PromptInjectionSpike
+        expr: sum(rate(prompt_injection_total[5m])) > 0.5
+        for: 10m
+        labels: { severity: warn }
+        annotations:
+          summary: "Elevated prompt-injection attempts — review document uploads"

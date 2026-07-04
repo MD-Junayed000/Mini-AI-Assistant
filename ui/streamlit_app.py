@@ -80,10 +80,52 @@ def start_new_chat() -> None:
 
 
 def switch_chat(sid: str) -> None:
-    """Make `sid` the active chat. Posts nothing — local switch only."""
-    if sid:
-        st.session_state.session_id = sid
-        _messages_for(sid)
+    """Make `sid` the active chat.
+
+    If we don't already have messages for it in the local `chat_store`
+    (typical after a page refresh, or in a fresh browser tab), fetch them
+    from `GET /session/{sid}/messages` so the user sees their previous
+    prompts and answers instead of a blank pane.
+    """
+    if not sid:
+        return
+    st.session_state.session_id = sid
+    bucket = _messages_for(sid)
+    if bucket:
+        return
+    try:
+        with httpx.Client(timeout=10) as cx:
+            r = cx.get(
+                f"{API}/session/{sid}/messages",
+                headers={"Connection": "close"},
+            )
+            r.raise_for_status()
+            data = r.json()
+    except httpx.HTTPError:
+        return  # server unreachable / session gone; nothing to hydrate
+    server_msgs = data.get("messages") or []
+    if not server_msgs:
+        return
+    hydrated: list[dict[str, Any]] = []
+    for m in server_msgs:
+        hydrated.append(
+            {
+                "role": m.get("role", "assistant"),
+                "content": m.get("content", ""),
+                "ts": m.get("ts", 0.0),
+                "elapsed_s": m.get("elapsed_s"),
+                "sources": m.get("sources") or [],
+            }
+        )
+    st.session_state.chat_store[sid] = hydrated
+    # Pick up the saved title from the first user prompt so the sidebar
+    # doesn't show a generic "Chat ..." if the user renamed it earlier.
+    titles = _ensure_titles()
+    if sid not in titles:
+        for m in hydrated:
+            if m["role"] == "user" and m["content"]:
+                titles[sid] = m["content"][:40]
+                break
 
 
 def delete_chat(sid: str) -> None:
@@ -140,7 +182,10 @@ def _fetch_sessions() -> list[dict[str, Any]]:
     session ids if the server is unreachable so the sidebar still works."""
     try:
         with httpx.Client(timeout=5) as cx:
-            r = cx.get(f"{API}/sessions")
+            r = cx.get(
+                f"{API}/sessions",
+                headers={"Connection": "close"},
+            )
             r.raise_for_status()
             return r.json().get("sessions", []) or []
     except httpx.HTTPError:
@@ -180,7 +225,10 @@ def _active_label(sessions: list[dict[str, Any]], sid: str) -> str:
 def _health() -> dict[str, Any]:
     try:
         with httpx.Client(timeout=4) as cx:
-            r = cx.get(f"{API}/healthz")
+            r = cx.get(
+                f"{API}/healthz",
+                headers={"Connection": "close"},
+            )
             r.raise_for_status()
             return r.json()
     except Exception as exc:  # noqa: BLE001
@@ -208,11 +256,23 @@ with st.sidebar:
     if uploaded is not None:
         if st.button("Upload to knowledge base", use_container_width=True):
             with st.spinner("Indexing document..."):
+                # Read the upload into a bytes buffer once, then post it on a
+                # fresh connection that closes after the response. This avoids
+                # the WinError 10054 that hits Windows when httpx reuses a
+                # stale keep-alive socket to ship a multi-megabyte body.
+                file_bytes = uploaded.getvalue()
                 try:
-                    with httpx.Client(timeout=180) as cx:
+                    with httpx.Client(timeout=300) as cx:
                         r = cx.post(
                             f"{API}/ingest",
-                            files={"file": (uploaded.name, uploaded.getvalue())},
+                            headers={"Connection": "close"},
+                            files={
+                                "file": (
+                                    uploaded.name,
+                                    file_bytes,
+                                    uploaded.type or "application/octet-stream",
+                                )
+                            },
                         )
                         r.raise_for_status()
                         body = r.json()
@@ -354,6 +414,11 @@ st.caption(
 # IMPORTANT: read the active session id AFTER the sidebar (which may have
 # re-routed via switch_chat).
 active_sid = st.session_state.session_id
+# If we just got here (page reload / new tab), `switch_chat` may not have
+# fired; pull history from the server so the user sees their previous
+# prompts instead of an empty pane.
+if not st.session_state.get("chat_store", {}).get(active_sid):
+    switch_chat(active_sid)
 messages = _messages_for(active_sid)
 
 for msg in messages:

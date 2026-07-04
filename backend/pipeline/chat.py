@@ -38,6 +38,7 @@ slow request to the exact stage that made it slow.
 from __future__ import annotations
 
 import re
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any
@@ -132,6 +133,10 @@ async def _run_chat_inner(
     memory: Memory,
     root_span: Any,
 ) -> ChatResult:
+    # Wall-clock for the whole pipeline so we can show "answered in X s"
+    # after a page reload (we persist this on the assistant message).
+    pipeline_started_at = time.perf_counter()
+
     # 1. Injection scoring
     with _maybe_span("chat.injection_check"):
         verdict = score_injection(user_message)
@@ -232,8 +237,24 @@ async def _run_chat_inner(
     except Exception as e:  # noqa: BLE001
         log.error("llm_chat_failed", error=str(e))
         if tool_calls_made:
+            summary = _format_tool_summary(tool_calls_made)
+            # Persist so the chat history is complete on reload.
+            await memory.append(
+                Message(
+                    session_id=session_id,
+                    role="assistant",
+                    content=summary,
+                    metadata={
+                        "tool_calls": tool_calls_made,
+                        "sources": sources,
+                        "elapsed_s": round(
+                            time.perf_counter() - pipeline_started_at, 3
+                        ),
+                    },
+                )
+            )
             return ChatResult(
-                answer=_format_tool_summary(tool_calls_made),
+                answer=summary,
                 sources=sources,
                 tool_calls=tool_calls_made,
                 evidence={"gate": gate.signals, "gate_decision": gate.decision},
@@ -265,7 +286,15 @@ async def _run_chat_inner(
                 session_id=session_id,
                 role="assistant",
                 content=answer,
-                metadata={"gate": gate.signals, "tool_calls": tool_calls_made},
+                metadata={
+                    "gate": gate.signals,
+                    "tool_calls": tool_calls_made,
+                    # Persist sources + latency so a chat opened later via
+                    # GET /session/{id}/messages can re-render identically
+                    # to how it appeared live.
+                    "sources": sources,
+                    "elapsed_s": round(time.perf_counter() - pipeline_started_at, 3),
+                },
             )
         )
 

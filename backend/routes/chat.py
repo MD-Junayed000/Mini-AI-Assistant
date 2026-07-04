@@ -156,6 +156,35 @@ async def reset_session(session_id: str, memory: Memory = Depends(get_memory)) -
     return {"session_id": session_id, "reset": True}
 
 
+@router.get("/session/{session_id}/messages")
+async def get_session_messages(
+    session_id: str, memory: Memory = Depends(get_memory), limit: int = 200
+) -> dict:
+    """Return the conversation history for one session, oldest first.
+
+    The Streamlit sidebar uses this when the user switches to a previous
+    chat: we fetch the server's record of that conversation so the main
+    pane shows the same messages regardless of whether the user has
+    kept the local Streamlit state alive across the switch.
+    """
+    msgs = await memory.history(session_id, limit=limit)
+    # Strip internal-only fields; the UI only needs role/content/sources/
+    # elapsed_s so we don't leak metadata (e.g. original tool_call trace).
+    safe: list[dict[str, Any]] = []
+    for m in msgs:
+        meta = m.get("metadata") or {}
+        safe.append(
+            {
+                "role": m.get("role", "assistant"),
+                "content": m.get("content", ""),
+                "ts": m.get("ts", 0.0),
+                "elapsed_s": meta.get("elapsed_s"),
+                "sources": meta.get("sources") or [],
+            }
+        )
+    return {"session_id": session_id, "messages": safe}
+
+
 @router.get("/sessions")
 async def list_sessions(memory: Memory = Depends(get_memory)) -> dict:
     """All known sessions, newest activity first.

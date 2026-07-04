@@ -18,11 +18,22 @@ Stages:
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from backend.observability.logging_config import get_logger
+
+# Docling imports torch, which on Windows frequently prints noisy DLL init
+# errors to stderr even when the import ultimately succeeds. Quiet those down
+# so the CLI surface stays readable on every `python -m backend.ingestion.pipeline`
+# run; the probe below will still tell us whether the backend is usable.
+os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+logging.getLogger("torch").setLevel(logging.ERROR)
+logging.getLogger("transformers").setLevel(logging.ERROR)
 
 log = get_logger("ingest")
 
@@ -62,7 +73,7 @@ def _probe_docling() -> tuple[bool, str | None]:
     except Exception as exc:  # noqa: BLE001 — any import failure
         _DOCLING_AVAILABLE = False
         _DOCLING_ERROR = f"{type(exc).__name__}: {exc}"
-        log.warning("docling_backend_unavailable", error=_DOCLING_ERROR)
+        log.info("docling_backend_unavailable", error=_DOCLING_ERROR)
         return False, _DOCLING_ERROR
 
 

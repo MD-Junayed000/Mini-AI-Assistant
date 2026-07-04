@@ -241,33 +241,85 @@ async def extract(pdf_path: Path) -> ExtractedDocument:
     best available backend can produce — never raises on backend failure
     (the goal is to keep /ingest working even when docling is broken).
     """
+    doc, _backend, _reason = await extract_with_backend(pdf_path)
+    return doc
+
+
+async def extract_with_backend(
+    pdf_path: Path,
+) -> tuple[ExtractedDocument, str, str | None]:
+    """Like `extract` but also reports which backend was used.
+
+    Returns (ExtractedDocument, backend_name, fallback_reason_or_None).
+    `backend_name` is one of: "docling", "pdfplumber", "plaintext".
+    `fallback_reason` is None when docling succeeded; otherwise it's a
+    short machine-readable code describing why docling was skipped
+    (e.g. "docling_dll_unavailable").
+    """
     if not _is_pdf(pdf_path):
         # Plain text / markdown — fast path.
         text = pdf_path.read_text(encoding="utf-8", errors="ignore")
-        return ExtractedDocument(
-            source=str(pdf_path),
-            text=text,
-            figure_descriptions=[],
-            ocr_pages=0,
+        return (
+            ExtractedDocument(
+                source=str(pdf_path),
+                text=text,
+                figure_descriptions=[],
+                ocr_pages=0,
+            ),
+            "plaintext",
+            None,
         )
 
+    available, probe_err = _probe_docling()
+    fallback_reason: str | None = None
+    if not available:
+        # Translate the most common probe error into a stable code so the
+        # UI can show "indexed with pdfplumber (docling unavailable)".
+        if probe_err and ("WinError 1114" in probe_err or "DLL" in probe_err):
+            fallback_reason = "docling_dll_unavailable"
+        else:
+            fallback_reason = "docling_unavailable"
+
     try:
-        native_text, figure_nodes = await _extract_native(pdf_path)
+        if available:
+            try:
+                native_text, figure_nodes = await _docling_native(pdf_path)
+                backend_used = "docling"
+            except Exception as inner:  # noqa: BLE001
+                # Docling loaded but failed on this specific file (e.g. a
+                # corrupt page). Fall back to pdfplumber rather than 500.
+                log.warning(
+                    "docling_runtime_failed_falling_back", error=str(inner)[:200]
+                )
+                fallback_reason = "docling_runtime_failed"
+                native_text, figure_nodes = await _pdfplumber_native(pdf_path)
+                backend_used = "pdfplumber"
+        else:
+            native_text, figure_nodes = await _pdfplumber_native(pdf_path)
+            backend_used = "pdfplumber"
     except Exception as exc:  # noqa: BLE001
         log.error("all_pdf_extractors_failed", error=str(exc))
-        return ExtractedDocument(
-            source=str(pdf_path),
-            text="",
-            figure_descriptions=[],
-            ocr_pages=0,
+        return (
+            ExtractedDocument(
+                source=str(pdf_path),
+                text="",
+                figure_descriptions=[],
+                ocr_pages=0,
+            ),
+            "none",
+            "all_extractors_failed",
         )
 
     text, ocr_pages = await _ocr_low_density_pages(pdf_path, native_text)
     descriptions = await _describe_figures(pdf_path, figure_nodes)
 
-    return ExtractedDocument(
-        source=str(pdf_path),
-        text=re.sub(r"\n{3,}", "\n\n", text).strip(),
-        figure_descriptions=descriptions,
-        ocr_pages=ocr_pages,
+    return (
+        ExtractedDocument(
+            source=str(pdf_path),
+            text=re.sub(r"\n{3,}", "\n\n", text).strip(),
+            figure_descriptions=descriptions,
+            ocr_pages=ocr_pages,
+        ),
+        backend_used,
+        fallback_reason,
     )

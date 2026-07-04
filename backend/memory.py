@@ -110,6 +110,89 @@ class Memory:
                 self._healthy = False
         self._fallback[session_id] = []
 
+    async def list_sessions(self) -> list[dict[str, Any]]:
+        """Return one row per known session_id with title, turn count, and last_ts.
+
+        Title is derived from the first user message (trimmed to 60 chars) so
+        the UI can show readable chat names. Used by the Streamlit sidebar's
+        session-history list.
+        """
+        await self._ensure()
+        if self._healthy and self._collection is not None:
+            try:
+                pipeline: list[dict[str, Any]] = [
+                    {"$sort": {"ts": 1}},
+                    {
+                        "$group": {
+                            "_id": "$session_id",
+                            "count": {"$sum": 1},
+                            "last_ts": {"$max": "$ts"},
+                            "first_user": {
+                                "$first": {
+                                    "$cond": [
+                                        {"$eq": ["$role", "user"]},
+                                        "$content",
+                                        "",
+                                    ]
+                                }
+                            },
+                        }
+                    },
+                    {"$sort": {"last_ts": -1}},
+                ]
+                out: list[dict[str, Any]] = []
+                async for doc in self._collection.aggregate(pipeline):
+                    raw = (doc.get("first_user") or "").strip().replace("\n", " ")
+                    title = raw[:60] or f"session {doc['_id'][:8]}"
+                    out.append(
+                        {
+                            "session_id": doc["_id"],
+                            "title": title,
+                            "turns": doc.get("count", 0),
+                            "last_ts": float(doc.get("last_ts", 0.0) or 0.0),
+                        }
+                    )
+                return out
+            except Exception as e:  # noqa: BLE001
+                log.warning("mongo_list_failed_falling_back", error=str(e))
+                self._healthy = False
+        # In-memory fallback: derive the same shape from the dict.
+        out: list[dict[str, Any]] = []
+        for sid, msgs in self._fallback.items():
+            first_user = next(
+                (m.get("content", "") for m in msgs if m.get("role") == "user"),
+                "",
+            )
+            out.append(
+                {
+                    "session_id": sid,
+                    "title": (first_user.strip() or f"session {sid[:8]}")[:60],
+                    "turns": len(msgs),
+                    "last_ts": float(
+                        max((m.get("ts", 0.0) for m in msgs), default=0.0)
+                    ),
+                }
+            )
+        out.sort(key=lambda r: r["last_ts"], reverse=True)
+        return out
+
+    async def delete_session(self, session_id: str) -> bool:
+        """Forget a session entirely (history + memory). Returns True if anything was removed."""
+        await self._ensure()
+        removed = False
+        if self._healthy and self._collection is not None:
+            try:
+                res = await self._collection.delete_many({"session_id": session_id})
+                removed = bool(getattr(res, "deleted_count", 0))
+                return removed
+            except Exception as e:  # noqa: BLE001
+                log.warning("mongo_delete_failed_falling_back", error=str(e))
+                self._healthy = False
+        if session_id in self._fallback:
+            self._fallback.pop(session_id)
+            removed = True
+        return removed
+
     async def close(self) -> None:
         if self._client is not None:
             self._client.close()

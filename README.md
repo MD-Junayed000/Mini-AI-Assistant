@@ -490,7 +490,7 @@ uvicorn main:app --host 127.0.0.1 --port 8000
 pytest -q              # all 47 tests
 pytest -q -m "not network"   # offline subset (CI-friendly)
 ```
-
+## Docker Installtion
 ### 6.9 Docker — API + UI
 
 ```powershell

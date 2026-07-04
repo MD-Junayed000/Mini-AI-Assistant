@@ -41,6 +41,10 @@ class ChatIn(BaseModel):
     message: str = Field(..., min_length=1, max_length=4000)
 
 
+class RenameIn(BaseModel):
+    title: str = Field(..., min_length=1, max_length=120)
+
+
 # ---------- Dependencies --------------------------------------------------
 def get_memory() -> Memory:  # noqa: D401
     """Process-singleton Memory instance — replaced by FastAPI's DI in main.py."""
@@ -81,7 +85,10 @@ async def root() -> dict:
         "endpoints": {
             "POST /chat": "send a chat message (JSON: {session_id, message})",
             "POST /ingest": "upload a PDF/TXT/MD document for retrieval",
+            "GET  /sessions": "list all known chat sessions (newest first)",
             "POST /session/{id}/reset": "clear conversation memory for a session",
+            "POST /session/{id}/delete": "permanently delete a session's history",
+            "POST /session/{id}/rename": "rename a session (body: {title})",
             "GET  /healthz": "component health snapshot (cached 30s)",
             "GET  /metrics": "Prometheus exposition",
             "POST /admin/cache/refresh": "rebuild BM25 + reload tool registry",
@@ -101,10 +108,15 @@ async def ingest(file: UploadFile = File(...)) -> dict:
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(await file.read())
 
-    chunks = await ingest_file(dest)
+    result = await ingest_file(dest)
     # Rebuild BM25 after every ingest (small corpus, cheap).
     BM25Index.rebuild()
-    return {"chunks": chunks, "source": file.filename}
+    return {
+        "chunks": result.get("chunks", 0),
+        "source": file.filename,
+        "backend": result.get("backend", "unknown"),
+        "fallback_reason": result.get("fallback_reason"),
+    }
 
 
 @router.post("/chat")
@@ -142,6 +154,37 @@ async def chat(request: Request, body: ChatIn, memory: Memory = Depends(get_memo
 async def reset_session(session_id: str, memory: Memory = Depends(get_memory)) -> dict:
     await memory.reset(session_id)
     return {"session_id": session_id, "reset": True}
+
+
+@router.get("/sessions")
+async def list_sessions(memory: Memory = Depends(get_memory)) -> dict:
+    """All known sessions, newest activity first.
+
+    The Streamlit sidebar uses this to render a list of past chats that the
+    user can switch between without losing the previous conversation.
+    """
+    sessions = await memory.list_sessions()
+    return {"sessions": sessions}
+
+
+@router.post("/session/{session_id}/delete")
+async def delete_session(session_id: str, memory: Memory = Depends(get_memory)) -> dict:
+    """Permanently delete a session's history from memory."""
+    removed = await memory.delete_session(session_id)
+    return {"session_id": session_id, "deleted": removed}
+
+
+@router.post("/session/{session_id}/rename")
+async def rename_session(
+    session_id: str, body: RenameIn, memory: Memory = Depends(get_memory)
+) -> dict:
+    """Rename a session. We don't persist titles (Memory has no metadata table);
+    a successful call returns the new title so the UI can keep its own map in
+    sync. The rename is a no-op on the server side — the auto-derived title
+    will re-appear next time the page reloads.
+    """
+    title = body.title.strip()
+    return {"session_id": session_id, "title": title}
 
 
 @router.get("/healthz")

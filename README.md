@@ -1,6 +1,4 @@
-﻿﻿# Mini AI Assistant
-
-
+﻿# Mini AI Assistant
 
 A production-grade, fully local **RAG + tool-calling assistant** with prompt-injection defense, multi-turn memory, OTLP tracing, Prometheus metrics, and a Streamlit chat UI. The stack is built end-to-end on free-tier providers — **Ollama Cloud** for chat, **HuggingFace Inference** for embeddings and figure captioning, **ChromaDB** for vector storage, **MongoDB Atlas M0** for durable memory, and **Tempo + Grafana + Prometheus** for traces and metrics.
 
@@ -23,18 +21,11 @@ A production-grade, fully local **RAG + tool-calling assistant** with prompt-inj
 
 
 - **Nine-stage chat pipeline** — tool intent → retrieval → rerank → gate → prompt → LLM → memory, each stage traced and timed.
-
 - **Explicit-JSON tool router** — no LangChain / LlamaIndex; every routing decision is visible in `backend/pipeline/chat.py`.
-
 - **Hybrid retrieval** — Chroma cosine + BM25, reranked with a local cosine over ChromaDB's bundled `all-MiniLM-L6-v2` ONNX model.
-
 - **Defense in depth** — regex + entropy injection detector plus a hardened system prompt tail; per-session `slowapi` limiter.
-
 - **Observability by default** — `/healthz` + `/metrics` always on; OTLP traces opt in via one env var.
-
 - **Zero-cost demo path** — works without MongoDB (in-process memory fallback) and without the Docker obs stack (browser can hit `/metrics` directly).
-
-
 
 ---
 
@@ -45,33 +36,19 @@ A production-grade, fully local **RAG + tool-calling assistant** with prompt-inj
 
 
 1. [Architecture](#1-architecture)
-
 2. [AI Pipeline (end-to-end)](#2-ai-pipeline-end-to-end)
-
 3. [Model Choices & Rationale (basics + alternatives)](#3-model-choices--rationale-basics--alternatives)
-
 4. [Subsystems — short explanations](#4-subsystems--short-explanations)
-
 5. [Project layout](#5-project-layout)
-
 6. [Setup & Run](#6-setup--run)
-
 7. [Environment Contract](#7-environment-contract)
-
 8. [Tool calling (with sample `orders.json` and `products.json`)](#8-tool-calling-with-sample-ordersjson-and-productsjson)
-
 9. [MongoDB Atlas — "Why doesn't the database appear?"](#9-mongodb-atlas--why-doesnt-the-database-appear)
-
 10. [API health check & smoke tests](#10-api-health-check--smoke-tests)
-
 11. [Monitoring — what to look at, where, and why](#11-monitoring--what-to-look-at-where-and-why)
-
 12. [Error handling — every failure mode covered](#12-error-handling--every-failure-mode-covered)
-
 13. [How to know ChromaDB is working correctly](#13-how-to-know-chromadb-is-working-correctly)
-
 14. [End-to-end effectiveness checklist](#14-end-to-end-effectiveness-checklist)
-
 15. [Evaluation criteria mapping](#15-evaluation-criteria-mapping)
 
 

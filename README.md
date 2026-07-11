@@ -1,4 +1,4 @@
-# MiniCo Internal Docs
+# MiniCo Docs
 
 A production-grade, fully local **RAG + tool-calling assistant** with prompt-injection defense, multi-turn memory, OTLP tracing, Prometheus metrics, and a Streamlit chat UI. The stack is built end-to-end on free-tier providers — **Ollama Cloud** for chat, **HuggingFace Inference** for embeddings and figure captioning, **ChromaDB** for vector storage, **MongoDB Atlas M0** for durable memory, and **Tempo + Grafana + Prometheus** for traces and metrics.
 

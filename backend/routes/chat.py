@@ -81,7 +81,7 @@ async def _track_http(request: Request, call_next):  # type: ignore[no-untyped-d
 async def root() -> dict:
     """Friendly landing — the UI lives at the Streamlit port (default 8501)."""
     return {
-        "service": "MiniCo Internal Docs",
+        "service": "MiniCo Docs",
         "version": "0.2.2",
         "ui": "http://localhost:8501 (run `streamlit run ui/streamlit_app.py`)",
         "endpoints": {

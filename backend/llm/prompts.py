@@ -38,7 +38,7 @@ def _first_order_sample() -> str:
 #   * Only fall back to "I don't know based on the available information."
 #     when the user is asking a domain question AND the retrieved KB / tools
 #     have nothing relevant to offer.
-BASE_SYSTEM_PROMPT = """You are MiniCo Internal Docs — a friendly, careful
+BASE_SYSTEM_PROMPT = """You are an AI-Assistant — a friendly, careful
 assistant for a small e-commerce operations team. You have TWO modes:
 
 1. GENERAL CHAT (default). When the user is making conversation, asking

@@ -129,7 +129,25 @@ async function parseOrEmpty<T>(p: Promise<Response>): Promise<T> {
   // No content (204) — return empty object cast.
   if (r.status === 204) return {} as T;
   const text = await r.text();
-  const data = text ? (JSON.parse(text) as unknown) : {};
+  const contentType = r.headers.get("content-type") ?? "";
+  const looksJson = contentType.includes("application/json") || contentType.includes("+json");
+  let data: unknown = {};
+  if (text) {
+    try {
+      data = JSON.parse(text) as unknown;
+    } catch {
+      const snippet = text.trim().slice(0, 120).replace(/\s+/g, " ");
+      throw new ApiError(
+        r.status,
+        snippet.startsWith("<!doctype") || snippet.startsWith("<html")
+          ? `Received HTML instead of JSON from the API. Check the frontend proxy or VITE_API_BASE.`
+          : `Received a non-JSON response from the API. Check the frontend proxy or VITE_API_BASE.`,
+        null,
+      );
+    }
+  } else if (!looksJson) {
+    data = {};
+  }
   if (!r.ok) {
     const body = (data ?? null) as ApiErrorBody | null;
     const msg = body?.friendly ?? body?.error ?? `HTTP ${r.status}`;
@@ -205,6 +223,16 @@ export async function resetSession(
 ): Promise<{ reset: boolean }> {
   return parseOrEmpty<{ reset: boolean }>(
     fetchWithRetry(url(`/session/${encodeURIComponent(session_id)}/reset`), {
+      method: "POST",
+    }),
+  );
+}
+
+export async function bootstrapSession(
+  session_id: string,
+): Promise<{ session_id: string; touched: boolean }> {
+  return parseOrEmpty<{ session_id: string; touched: boolean }>(
+    fetchWithRetry(url(`/session/${encodeURIComponent(session_id)}/touch`), {
       method: "POST",
     }),
   );

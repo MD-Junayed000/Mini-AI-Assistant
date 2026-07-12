@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import Any
 
 from backend.config import get_settings
@@ -32,7 +33,7 @@ class Message:
             "role": self.role,
             "content": self.content,
             "metadata": self.metadata or {},
-            "ts": self.ts or asyncio.get_event_loop().time(),
+            "ts": self.ts or time.time(),
         }
 
 
@@ -46,9 +47,12 @@ class Memory:
         self._coll = s.mongodb_collection
         self._client: Any = None
         self._collection: Any = None
+        self._session_coll_name = s.mongodb_collection + "_sessions"
+        self._session_collection: Any = None
         self._meta_coll_name = s.mongodb_collection + "_meta"
         self._meta_collection: Any = None
         self._fallback: dict[str, list[dict[str, Any]]] = {}
+        self._session_fallback: dict[str, dict[str, Any]] = {}
         # In-proc metadata cache so a Mongo cold-start still serves the
         # current rename in the few seconds before _ensure() resolves.
         self._meta_fallback: dict[str, dict[str, Any]] = {}
@@ -68,10 +72,50 @@ class Memory:
                 # Ping
                 await self._client.admin.command("ping")
                 self._collection = self._client[self._db][self._coll]
+                self._session_collection = self._client[self._db][self._session_coll_name]
                 self._meta_collection = self._client[self._db][self._meta_coll_name]
                 self._healthy = True
             except Exception as e:  # noqa: BLE001
                 log.warning("mongo_unavailable_using_memory_fallback", error=str(e))
+                self._healthy = False
+
+    def _touch_fallback_session(self, session_id: str, *, ts: float | None = None, title: str | None = None) -> None:
+        now = float(ts or time.time())
+        entry = self._session_fallback.setdefault(
+            session_id,
+            {
+                "session_id": session_id,
+                "created_ts": now,
+                "last_ts": now,
+            },
+        )
+        entry["last_ts"] = max(float(entry.get("last_ts", now)), now)
+        entry.setdefault("created_ts", now)
+        if title is not None:
+            entry["title"] = title
+
+    async def touch_session(self, session_id: str, *, ts: float | None = None, title: str | None = None) -> None:
+        """Register a session even before the first message is sent."""
+        if not session_id:
+            return
+        now = float(ts or time.time())
+        self._touch_fallback_session(session_id, ts=now, title=title)
+        await self._ensure()
+        if self._healthy and self._session_collection is not None:
+            try:
+                update: dict[str, Any] = {
+                    "$set": {"session_id": session_id, "last_ts": now},
+                    "$setOnInsert": {"session_id": session_id, "created_ts": now},
+                }
+                if title is not None:
+                    update["$set"]["title"] = title
+                await self._session_collection.update_one(
+                    {"session_id": session_id},
+                    update,
+                    upsert=True,
+                )
+            except Exception as e:  # noqa: BLE001
+                log.warning("mongo_session_touch_failed_falling_back", error=str(e))
                 self._healthy = False
 
     async def append(self, m: Message) -> None:
@@ -79,12 +123,15 @@ class Memory:
         if self._healthy and self._collection is not None:
             try:
                 await self._collection.insert_one(m.to_doc())
+                await self.touch_session(m.session_id, ts=m.ts)
                 return
             except Exception as e:  # noqa: BLE001
                 log.warning("mongo_write_failed_falling_back", error=str(e))
                 self._healthy = False
         # In-memory fallback.
-        self._fallback.setdefault(m.session_id, []).append(m.to_doc())
+        doc = m.to_doc()
+        self._fallback.setdefault(m.session_id, []).append(doc)
+        self._touch_fallback_session(m.session_id, ts=doc["ts"])
 
     async def history(self, session_id: str, limit: int = 20) -> list[dict[str, Any]]:
         await self._ensure()
@@ -110,11 +157,15 @@ class Memory:
         if self._healthy and self._collection is not None:
             try:
                 await self._collection.delete_many({"session_id": session_id})
+                if self._session_collection is not None:
+                    await self._session_collection.delete_many({"session_id": session_id})
                 return
             except Exception as e:  # noqa: BLE001
                 log.warning("mongo_reset_failed", error=str(e))
                 self._healthy = False
         self._fallback[session_id] = []
+        self._session_fallback.pop(session_id, None)
+        self._meta_fallback.pop(session_id, None)
 
     async def rename_session(self, session_id: str, title: str) -> None:
         """Persist a user-set title for a session.
@@ -131,6 +182,7 @@ class Memory:
             "session_id": session_id,
             "title": v,
         }
+        self._touch_fallback_session(session_id, title=v)
         await self._ensure()
         if self._healthy and self._meta_collection is not None:
             try:
@@ -139,6 +191,15 @@ class Memory:
                     {"$set": {"session_id": session_id, "title": v}},
                     upsert=True,
                 )
+                if self._session_collection is not None:
+                    await self._session_collection.update_one(
+                        {"session_id": session_id},
+                        {
+                            "$set": {"session_id": session_id, "title": v, "last_ts": time.time()},
+                            "$setOnInsert": {"session_id": session_id, "created_ts": time.time()},
+                        },
+                        upsert=True,
+                    )
             except Exception as e:  # noqa: BLE001
                 log.warning("mongo_rename_failed_keeping_in_memory", error=str(e))
                 self._healthy = False
@@ -146,10 +207,13 @@ class Memory:
     async def delete_session_meta(self, session_id: str) -> None:
         """Drop any stored title for a session when it's deleted."""
         self._meta_fallback.pop(session_id, None)
+        self._session_fallback.pop(session_id, None)
         await self._ensure()
         if self._healthy and self._meta_collection is not None:
             try:
                 await self._meta_collection.delete_many({"session_id": session_id})
+                if self._session_collection is not None:
+                    await self._session_collection.delete_many({"session_id": session_id})
             except Exception as e:  # noqa: BLE001
                 log.warning("mongo_meta_delete_failed", error=str(e))
                 self._healthy = False
@@ -159,9 +223,22 @@ class Memory:
         cached = self._meta_fallback.get(session_id)
         if cached and cached.get("title"):
             return cached["title"]
+        cached = self._session_fallback.get(session_id)
+        if cached and cached.get("title"):
+            return cached["title"]
         await self._ensure()
         if self._healthy and self._meta_collection is not None:
             try:
+                if self._session_collection is not None:
+                    doc = await self._session_collection.find_one({"session_id": session_id})
+                    if doc and doc.get("title"):
+                        self._session_fallback[session_id] = {
+                            "session_id": session_id,
+                            "title": doc["title"],
+                            "created_ts": float(doc.get("created_ts", 0.0) or 0.0),
+                            "last_ts": float(doc.get("last_ts", 0.0) or 0.0),
+                        }
+                        return doc["title"]
                 doc = await self._meta_collection.find_one({"session_id": session_id})
                 if doc and doc.get("title"):
                     # Backfill the cache so subsequent reads are fast.
@@ -203,33 +280,65 @@ class Memory:
                             },
                         }
                     },
-                    {"$sort": {"last_ts": -1}},
                 ]
-                out: list[dict[str, Any]] = []
+                out: dict[str, dict[str, Any]] = {}
                 async for doc in self._collection.aggregate(pipeline):
                     sid = doc["_id"]
-                    persisted = await self.get_session_title(sid)
-                    if persisted:
-                        title = persisted
-                    else:
-                        raw = (doc.get("first_user") or "").strip().replace("\n", " ")
-                        title = raw[:60] or f"session {sid[:8]}"
-                    out.append(
-                        {
-                            "session_id": sid,
-                            "title": title,
-                            "turns": doc.get("count", 0),
-                            "last_ts": float(doc.get("last_ts", 0.0) or 0.0),
-                        }
-                    )
-                return out
+                    raw = (doc.get("first_user") or "").strip().replace("\n", " ")
+                    out[sid] = {
+                        "session_id": sid,
+                        "title": raw[:60] or f"session {sid[:8]}",
+                        "turns": doc.get("count", 0),
+                        "last_ts": float(doc.get("last_ts", 0.0) or 0.0),
+                    }
+                if self._session_collection is not None:
+                    async for doc in self._session_collection.find({}):
+                        sid = doc.get("session_id")
+                        if not sid:
+                            continue
+                        existing = out.get(
+                            sid,
+                            {
+                                "session_id": sid,
+                                "title": f"session {sid[:8]}",
+                                "turns": 0,
+                                "last_ts": 0.0,
+                            },
+                        )
+                        if doc.get("title"):
+                            existing["title"] = doc["title"]
+                        existing["last_ts"] = max(
+                            float(existing.get("last_ts", 0.0) or 0.0),
+                            float(doc.get("last_ts", 0.0) or 0.0),
+                            float(doc.get("created_ts", 0.0) or 0.0),
+                        )
+                        out[sid] = existing
+                if self._meta_collection is not None:
+                    async for doc in self._meta_collection.find({}):
+                        sid = doc.get("session_id")
+                        title = doc.get("title")
+                        if not sid or not title:
+                            continue
+                        existing = out.get(sid)
+                        if existing is None:
+                            out[sid] = {
+                                "session_id": sid,
+                                "title": title,
+                                "turns": 0,
+                                "last_ts": 0.0,
+                            }
+                        else:
+                            existing["title"] = title
+                rows = list(out.values())
+                rows.sort(key=lambda r: r["last_ts"], reverse=True)
+                return rows
             except Exception as e:  # noqa: BLE001
                 log.warning("mongo_list_failed_falling_back", error=str(e))
                 self._healthy = False
         # In-memory fallback: derive the same shape from the dict.
-        out: list[dict[str, Any]] = []
+        out: dict[str, dict[str, Any]] = {}
         for sid, msgs in self._fallback.items():
-            persisted = self._meta_fallback.get(sid, {}).get("title")
+            persisted = self._meta_fallback.get(sid, {}).get("title") or self._session_fallback.get(sid, {}).get("title")
             if persisted:
                 title = persisted
             else:
@@ -238,18 +347,29 @@ class Memory:
                     "",
                 )
                 title = (first_user.strip() or f"session {sid[:8]}")[:60]
-            out.append(
+            out[sid] = {
+                "session_id": sid,
+                "title": title,
+                "turns": len(msgs),
+                "last_ts": float(max((m.get("ts", 0.0) for m in msgs), default=0.0)),
+            }
+        for sid, data in self._session_fallback.items():
+            existing = out.get(
+                sid,
                 {
                     "session_id": sid,
-                    "title": title,
-                    "turns": len(msgs),
-                    "last_ts": float(
-                        max((m.get("ts", 0.0) for m in msgs), default=0.0)
-                    ),
-                }
+                    "title": data.get("title") or f"session {sid[:8]}",
+                    "turns": 0,
+                    "last_ts": 0.0,
+                },
             )
-        out.sort(key=lambda r: r["last_ts"], reverse=True)
-        return out
+            if data.get("title"):
+                existing["title"] = data["title"]
+            existing["last_ts"] = max(float(existing.get("last_ts", 0.0) or 0.0), float(data.get("last_ts", 0.0) or 0.0))
+            out[sid] = existing
+        rows = list(out.values())
+        rows.sort(key=lambda r: r["last_ts"], reverse=True)
+        return rows
 
     async def delete_session(self, session_id: str) -> bool:
         """Forget a session entirely (history + memory). Returns True if anything was removed."""
@@ -267,6 +387,11 @@ class Memory:
                         await self._meta_collection.delete_many({"session_id": session_id})
                     except Exception:  # noqa: BLE001
                         pass
+                if self._session_collection is not None:
+                    try:
+                        await self._session_collection.delete_many({"session_id": session_id})
+                    except Exception:  # noqa: BLE001
+                        pass
                 return removed
             except Exception as e:  # noqa: BLE001
                 log.warning("mongo_delete_failed_falling_back", error=str(e))
@@ -274,6 +399,8 @@ class Memory:
         if session_id in self._fallback:
             self._fallback.pop(session_id)
             removed = True
+        self._session_fallback.pop(session_id, None)
+        self._meta_fallback.pop(session_id, None)
         return removed
 
     async def close(self) -> None:
@@ -281,4 +408,6 @@ class Memory:
             self._client.close()
             self._client = None
             self._collection = None
+            self._session_collection = None
+            self._meta_collection = None
             self._healthy = False

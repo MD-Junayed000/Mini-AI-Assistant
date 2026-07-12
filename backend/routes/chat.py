@@ -89,6 +89,7 @@ async def root() -> dict:
             "POST /chat": "send a chat message (JSON: {session_id, message})",
             "POST /ingest": "upload a PDF/TXT/MD document for retrieval",
             "GET  /sessions": "list all known chat sessions (newest first)",
+            "POST /session/{id}/touch": "register or refresh a chat session without adding a message",
             "POST /session/{id}/reset": "clear conversation memory for a session",
             "POST /session/{id}/delete": "permanently delete a session's history",
             "POST /session/{id}/rename": "rename a session (body: {title})",
@@ -162,6 +163,13 @@ async def chat(request: Request, body: ChatIn, memory: Memory = Depends(get_memo
 async def reset_session(session_id: str, memory: Memory = Depends(get_memory)) -> dict:
     await memory.reset(session_id)
     return {"session_id": session_id, "reset": True}
+
+
+@router.post("/session/{session_id}/touch")
+async def touch_session(session_id: str, memory: Memory = Depends(get_memory)) -> dict:
+    """Register a session before the first message is sent."""
+    await memory.touch_session(session_id)
+    return {"session_id": session_id, "touched": True}
 
 
 @router.get("/session/{session_id}/messages")

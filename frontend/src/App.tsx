@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { ChatPane } from "./components/ChatPane";
-import { listSessions, type SessionSummary } from "./api/client";
+import { bootstrapSession, listSessions, type SessionSummary } from "./api/client";
 
 /** Generate a 12-char hex session id without an external dependency. */
 function newSid(): string {
@@ -143,7 +143,14 @@ export default function App() {
     }
     setActiveSid(sid);
     setTouchTick((n) => n + 1);
-  }, [activeSid]);
+    void bootstrapSession(sid)
+      .then(() => {
+        void refreshSessions();
+      })
+      .catch(() => {
+        /* local sidebar state still keeps the new chat visible */
+      });
+  }, [activeSid, refreshSessions]);
 
   /** Switch to a different chat. */
   const handleSwitchChat = useCallback((sid: string) => {

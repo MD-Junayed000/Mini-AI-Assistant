@@ -16,7 +16,7 @@ export default defineConfig({
     port: 5173,
     host: true, // 0.0.0.0 so Docker / other host browsers can reach us
     proxy: {
-      "^/(chat|sessions|ingest|healthz|metrics|kb|tools)(/.*)?$": {
+      "^/(chat|sessions|session|ingest|healthz|metrics|admin|kb|tools)(/.*)?$": {
         target: "http://localhost:8000",
         changeOrigin: true,
       },

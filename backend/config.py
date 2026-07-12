@@ -5,6 +5,7 @@ declarative. Loaded once at import time via lru_cache.
 """
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -31,12 +32,18 @@ class Settings(BaseSettings):
     hf_inference_base_url: str = "https://router.huggingface.co/v1"
     hf_inference_api_key: str = "your-hf-token"
     hf_embedding_model: str = "BAAI/bge-small-en-v1.5"
-    hf_rerank_model: str = "BAAI/bge-reranker-base"
-    hf_vision_model: str = "ibm-granite/granite-docling-258M"
+    vision_provider: Literal["hf", "ollama"] = "ollama"
+    hf_vision_model: str = "google/gemma-3-27b-it"
+    ollama_vision_model: str = "gemma4:31b-cloud"
 
     # --- Vector store ------------------------------------------------------
-    chroma_persist_dir: str = "./.chroma"
+    chroma_use_cloud: bool = True
+    chroma_host: str = "api.trychroma.com"
+    chroma_api_key: str = ""
+    chroma_tenant: str = ""
+    chroma_database: str = "mini_ai"
     chroma_collection: str = "mini_ai_kb"
+    chroma_persist_dir: str = "./.chroma"
     bm25_cache_path: str = "./.chroma/bm25.pkl"
 
     # --- Memory ------------------------------------------------------------
@@ -49,8 +56,7 @@ class Settings(BaseSettings):
     health_cache_ttl_seconds: int = 10
     max_context_chars: int = 8_000
     confidence_gate_threshold: float = 0.62
-    # Set true to skip the rerank stage entirely (the chat pipeline will
-    # fall back to RRF ordering alone).
+    cors_origins: str = "*"
     rerank_disabled: bool = False
 
     # --- Logging -----------------------------------------------------------

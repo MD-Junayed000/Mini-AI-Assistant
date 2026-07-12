@@ -103,6 +103,160 @@ def _is_small_talk(message: str) -> bool:
     return bool(_GREETING_RE.match(message))
 
 
+# ----- Anaphoric / coreference resolution ---------------------------------
+# Pronoun-led / elliptical follow-ups (e.g. "where he lives", "what are his
+# publications") can't be sent to the dense index literally — the embeddings
+# for "where he lives" don't match chunks about the antecedent ("Junayed" /
+# "Chattogram"). We substitute pronouns against named entities found in the
+# most recent assistant turn so retrieval stands a chance, while the LLM
+# still receives the original follow-up.
+
+# Pronouns we substitute with the antecedent (lowercased, with the preceding
+# verb/article re-spaced).
+_PRONOUN_MAP: dict[str, list[str]] = {
+    "he": ["he", "his", "him", "himself"],
+    "she": ["she", "her", "hers", "herself"],
+    "they": ["they", "their", "them", "theirs", "themselves"],
+    "it": ["it", "its", "itself"],
+}
+
+# Pattern: starts with a WH-word OR is short enough to clearly be a follow-up,
+# contains one of our pronoun tokens.
+_ANAPHORIC_HINTS = re.compile(
+    r"\b(?:he|his|him|himself|she|her|hers|herself|they|their|them|"
+    r"theirs|themselves|it|its|itself|that|this|these|those|the\s+same)\b",
+    re.IGNORECASE,
+)
+# Quick "looks like a follow-up": starts with WH/where/what/did/is/etc. and
+# is short. Same-threshold heuristic.
+_FOLLOWUP_OPENERS = re.compile(
+    r"^\s*(?:where|what|how|when|who|why|which|is|are|was|were|did|does|do|"
+    r"can|could|will|would|should|tell\s+me\s+about|and|but|also|more|"
+    r"about\s+(?:that|this|it|him|her|them))\b",
+    re.IGNORECASE,
+)
+
+# Person-name heuristic: 2-4 capitalized tokens (with optional internal
+# apostrophes / hyphens) at the start of a sentence or after a sentence break.
+# Catches "Muhammad Junayed", "Anne-Marie Curie", "Dr. Smith". Excludes
+# common sentence-starter words that happen to be titlecase.
+_NAME_TOKEN = r"[A-Z][a-zA-Z'’\-]+"
+_NAME_SEG = rf"(?:{_NAME_TOKEN}|\s+|-)"
+_TITLE_SKIP = {
+    "Sure",
+    "Yes",
+    "No",
+    "Hello",
+    "Hi",
+    "Hey",
+    "Thanks",
+    "Thank",
+    "Sorry",
+    "Please",
+    "The",
+    "This",
+    "That",
+    "These",
+    "Those",
+    "He",
+    "She",
+    "They",
+    "It",
+    "I",
+    "We",
+    "You",
+    "They",
+    "Our",
+    "Their",
+    "Your",
+}
+_PERSON_RE = re.compile(
+    rf"(?:(?<=\.)\s+|(?<=\?\s)|(?<=\n)|(?<=^)|\b)"
+    rf"(?:(?:Dr|Mr|Mrs|Ms|Prof|Sir|Madam)\.?\s+)?"
+    rf"({_NAME_TOKEN}(?:[ \t]+{_NAME_TOKEN}){{0,3}})"
+)
+
+
+def _looks_like_person_name(candidate: str) -> bool:
+    """Filter out false positives from the person-name regex."""
+    if not candidate or not candidate[0].isupper():
+        return False
+    parts = candidate.split()
+    if not parts or parts[0] in _TITLE_SKIP:
+        return False
+    if not any(p[0].isupper() and any(ch.islower() for ch in p) for p in parts):
+        return False
+    return True
+
+
+def _is_anaphoric_followup(message: str) -> bool:
+    """True when the user message is a short pronoun-led follow-up."""
+    msg = (message or "").strip()
+    if not msg or len(msg) > 80:
+        return False
+    if not _ANAPHORIC_HINTS.search(msg):
+        return False
+    return bool(_FOLLOWUP_OPENERS.match(msg) or "?" in msg or len(msg.split()) <= 6)
+
+
+def _extract_person_antecedent(history: list[dict[str, Any]]) -> str | None:
+    """Pull the most recent person-name mention from the conversation history.
+
+    Looks at the last assistant turn first (answers usually name the subject
+    in their first sentence), then the user turn before that as a fallback.
+    """
+    for turn in reversed(history):
+        if turn.get("role") != "assistant":
+            continue
+        text = turn.get("content", "")
+        for m in _PERSON_RE.finditer(text):
+            cand = m.group(1).strip()
+            if _looks_like_person_name(cand):
+                return cand
+    for turn in reversed(history):
+        if turn.get("role") != "user":
+            continue
+        for m in _PERSON_RE.finditer(turn.get("content", "")):
+            cand = m.group(1).strip()
+            if _looks_like_person_name(cand):
+                return cand
+    return None
+
+
+def _substitute_pronouns(message: str, antecedent: str) -> str:
+    """Replace pronoun tokens in `message` with the antecedent so the
+    resulting string stands alone for retrieval."""
+    for _gender, forms in _PRONOUN_MAP.items():
+        pattern = r"\b(" + "|".join(re.escape(f) for f in forms) + r")\b"
+        message = re.sub(pattern, antecedent, message, flags=re.IGNORECASE)
+    return message
+
+
+def _build_retrieval_query(
+    user_message: str,
+    history: list[dict[str, Any]],
+    is_anaphoric: bool,
+) -> str:
+    """Resolve the user message into a self-contained retrieval query.
+
+    For anaphoric follow-ups, substitute pronouns with the named antecedent
+    pulled from the most recent assistant turn. Otherwise return the message
+    unchanged. We never touch the LLM's input — the model still gets the
+    original pronoun-led phrase plus history.
+    """
+    if not is_anaphoric:
+        return user_message
+    antecedent = _extract_person_antecedent(history)
+    if not antecedent:
+        return user_message
+    resolved = _substitute_pronouns(user_message, antecedent)
+    # Append the antecedent so retrieval stays semantically anchored even if
+    # the substitution produces slightly ungrammatical text.
+    if antecedent.lower() not in resolved.lower():
+        resolved = f"{resolved} {antecedent}"
+    return resolved
+
+
 @contextmanager
 def _nullctx():
     """No-op context manager used when OTel is disabled."""
@@ -210,13 +364,33 @@ async def _run_chat_inner(
 
     if early_tool is not None:
         with STAGE_LATENCY.labels(stage="tool").time(), _maybe_span("chat.tool_early"):
-            result = dispatch_tool(early_tool)
-        tool_calls_made.append({"tool": early_tool.name, "args": early_tool.args, "result": result})
-        extra_context_blocks.append(f"[tool-result {early_tool.name}] {result!r}")
+            try:
+                result = dispatch_tool(early_tool)
+            except Exception as e:  # noqa: BLE001
+                log.warning("tool_early_dispatch_failed", tool=early_tool.name, error=str(e))
+                early_tool = None
+                result = None
+        if early_tool is not None:
+            tool_calls_made.append({"tool": early_tool.name, "args": early_tool.args, "result": result})
+            extra_context_blocks.append(f"[tool-result {early_tool.name}] {result!r}")
 
-    # 5. Retrieve + rerank.
+    # 5. Retrieve + rerank — query rewrite for anaphoric follow-ups.
+    # When the user message is a short pronoun-led follow-up ("where he lives",
+    # "what are his publications"), substitute the antecedent from history so
+    # dense + BM25 actually have a chance of finding the right chunks. The LLM
+    # still receives the original user message + history below.
+    is_anaphoric = _is_anaphoric_followup(user_message) and bool(tool_calls_made is not None and not tool_calls_made)
+    retrieval_query = _build_retrieval_query(user_message, history, is_anaphoric)
+    if is_anaphoric:
+        log.info("anaphoric_query_resolved", original=user_message, resolved=retrieval_query)
+        if root_span is not None and hasattr(root_span, "set_attribute"):
+            try:
+                root_span.set_attribute("anaphoric.resolved_query", retrieval_query)
+            except Exception:  # noqa: BLE001
+                pass
+
     with STAGE_LATENCY.labels(stage="retrieve_rerank").time(), _maybe_span("chat.retrieve_rerank"):
-        retrieved: list[Retrieved] = await hybrid_retrieve(user_message, top_k=8)
+        retrieved: list[Retrieved] = await hybrid_retrieve(retrieval_query, top_k=8)
 
     with _maybe_span("chat.gate"):
         gate = gate_evaluate(retrieved)

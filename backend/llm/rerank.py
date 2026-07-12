@@ -46,13 +46,14 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
     ChromaDB's ``DefaultEmbeddingFunction`` normalizes embeddings to unit
     length, so cosine similarity == dot product — faster than the full
-    a·b / (‖a‖·‖b‖) form.
+    a·b / (‖a‖·‖b‖) form. Coerce to a native ``float`` so the score
+    serializes cleanly through Pydantic / BSON (numpy scalars trip both).
     """
     n = min(len(a), len(b))
     s = 0.0
     for i in range(n):
-        s += a[i] * b[i]
-    return s
+        s += float(a[i]) * float(b[i])
+    return float(s)
 
 
 _EMBED_FN = None

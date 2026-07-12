@@ -114,8 +114,8 @@ class Memory:
         """Return one row per known session_id with title, turn count, and last_ts.
 
         Title is derived from the first user message (trimmed to 60 chars) so
-        the UI can show readable chat names. Used by the Streamlit sidebar's
-        session-history list.
+        the UI can show readable chat names. Used by the sidebar's session
+        list.
         """
         await self._ensure()
         if self._healthy and self._collection is not None:

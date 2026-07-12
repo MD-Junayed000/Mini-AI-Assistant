@@ -1,17 +1,15 @@
-# MiniCo Docs
+# Mini AI Assistant
 
-A production-grade, fully local **RAG + tool-calling assistant** with prompt-injection defense, multi-turn memory, OTLP tracing, Prometheus metrics, and a Streamlit chat UI. The stack is built end-to-end on free-tier providers — **Ollama Cloud** for chat, **HuggingFace Inference** for embeddings and figure captioning, **ChromaDB** for vector storage, **MongoDB Atlas M0** for durable memory, and **Tempo + Grafana + Prometheus** for traces and metrics.
+A production-grade, fully local **RAG + tool-calling assistant** with prompt-injection defense, multi-turn memory, OTLP tracing, Prometheus metrics, and a clean React chat UI. The stack is built end-to-end on free-tier providers — **Ollama Cloud** for chat, **HuggingFace Inference** for embeddings and figure captioning, **ChromaDB** for vector storage, **MongoDB Atlas M0** for durable memory, and **Tempo + Grafana + Prometheus** for traces and metrics.
 
+## Stack at a glance
 
-
- **Stack at a glance**
-
-> FastAPI 0.115 · Pydantic 2.9 · `httpx` + `tenacity` · ChromaDB 0.5 · `rank-bm25`
-
+> FastAPI 0.115 · Pydantic 2.9 · `httpx` + `tenacity` · ChromaDB ≥ 1.1 · `rank-bm25`
+>
 > · `sentence-transformers` · OpenAI-compatible client for Ollama Cloud ·
-
-> `motor` (async MongoDB) · `streamlit` · `structlog` · OpenTelemetry SDK ·
-
+>
+> `motor` (async MongoDB) · **Vite + React 18 + TypeScript** · `structlog` · OpenTelemetry SDK ·
+>
 > `prometheus-client` · multi-stage Docker image · non-root runtime · `tini` init.
 
 
@@ -69,7 +67,7 @@ The system is split into three concerns: **client layer**, **a single-process AP
 
 flowchart TB
  subgraph Clients["Clients"]
-        U["Streamlit UI<br>:8501"]
+        U["React UI<br>:5173 (vite dev)"]
         CLI["curl / Postman"]
   end
  subgraph API["FastAPI  :8000"]
@@ -234,7 +232,7 @@ This section consolidates the model decisions into a single reference: **what wa
 | **Framework** | FastAPI 0.115 | Flask, Django, LitServe | Async-native (a 30 s LLM call does not block anyone else); Pydantic v2 gives runtime schema validation; `/healthz` + `/metrics` ship in one deployment. |
 | **Orchestration** | None — explicit JSON router in `backend/tools/router.py` | LangChain LCEL, LlamaIndex agents | Every routing decision is visible in a single file. Honors the "don't phone home twice" constraint. |
 | **Container** | Multi-stage Docker on `python:3.11-slim`, non-root, `tini` | Single-stage, distroless | Slimmer image, no surprise OOM kills, `tini` reaps zombies. |
-| **UI** | Streamlit | React, Gradio | The UI is not the focus — Streamlit lets a polished chat fit in a single Python file. |
+| **UI** | Vite + React + TypeScript | Streamlit, Gradio | Fast, statically deployable, themed after Claude/Anthropic editorial. Backend is API-only — the SPA is served as a static bundle. |
 | **Injection defense** | Regex + entropy detector + system prompt tail | `prompt-guard`, Lakera | Defense in depth; one method alone is bypassable. Detector first, prompt hardening last. |
 | **Observability** | structlog + Prometheus + OTLP HTTP | Loki, ELK | No aggregator to operate; structlog writes one JSON line per event (pipe to `jq`); Prometheus gives free metrics; OTLP pushes spans to local Tempo via the bundled Docker stack. |
 
@@ -394,23 +392,28 @@ LLM output itself.
 │   ├── observability/        logging, metrics, tracing, redactor, request_context, health
 │   ├── security/             injection_guard + rate_limit
 │   └── config.py             Pydantic-settings source of truth
-├── ui/                       Streamlit app
+├── frontend/                 Vite + React 18 + TypeScript SPA (themed after Claude/Anthropic)
+│   ├── src/
+│   │   ├── api/              typed client for all 13 backend endpoints
+│   │   └── components/       Sidebar, MessageBubble, Composer, StatusPill
+│   ├── public/favicon.png    brand mark
+│   └── .env.example          VITE_API_BASE
 ├── data/
 │   ├── orders.json           mock order tool data
 │   ├── products.json         mock product tool data
-│   └── notes.txt             seed KB (chunks → ChromaDB on first ingest)
+│   ├── notes.txt             seed KB
+│   └── uploads/              files dropped here are picked up by ingestion
 ├── docs/                     decisions.md, runbook.md
 ├── ops/
 │   ├── tempo.yaml            local Tempo config (OTLP HTTP)
 │   ├── prometheus.yml        scrape config
 │   ├── alerts.yaml           sample alert rules
 │   └── grafana/              provisioning + dashboards/
-├── tests/                    11 test files, 47 tests, pytest -q
+├── tests/                    13 test files, ~80 tests, pytest -q
 ├── logs/                     rotating JSON logs (5 × 50 MB)
 ├── .chroma/                  vector store on-disk
-├── docker-compose.yml        api + ui (+ obs profile: tempo, prometheus, grafana)
+├── docker-compose.yml        api + frontend (+ obs profile: tempo, prometheus, grafana)
 ├── Dockerfile                multi-stage, non-root, tini
-├── Makefile                  15+ targets
 ├── requirements.txt
 ├── .env.example              full env contract
 └── README.md                 (this file)
@@ -432,8 +435,8 @@ canonical entrypoint is **`uvicorn main:app`** from the repo root
 | Tool | Why | Min version |
 |---|---|---|
 | Python | runs everything | 3.11 |
+| Node.js | Vite dev server + build | 20+ |
 | Docker (optional) | containers for reviewers | 24+ |
-| Make (optional) | convenience | any |
 | Ollama Cloud key | LLM calls | free tier |
 | HF Inference token | embeddings + vision | free tier |
 | MongoDB Atlas URI (optional) | persistent memory | free M0 |
@@ -490,14 +493,19 @@ Common errors and fixes:
 | `[WinError 10013]` / `Address already in use` | Stale process holding port 8000 | `Get-Process python \| Stop-Process -Force`, or pick another port: `uvicorn main:app --port 8001` |
 | `ModuleNotFoundError: No module named 'backend.api'` | Used `uvicorn backend.api.app:app` | Use `uvicorn main:app` (the repo-root `main.py`) |
 
-### 6.5 Start the Streamlit UI (Terminal 2)
+### 6.5 Start the React UI (Terminal 2)
 
-![Streamlit chat UI — left rail of cached sessions on the left, live chat on the right with a single-turn Ping](images/ui.png)
+![Mini AI Assistant UI — sidebar with Knowledge Base + Chats, chat panel with assistant bubble + sources, composer at the bottom](images/ui.png)
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
-streamlit run ui\streamlit_app.py --server.port 8501
+cd frontend
+npm install
+npm run dev    # http://localhost:5173
 ```
+
+The dev server proxies `/api/*` calls to `http://localhost:8000` (see `frontend/vite.config.ts`).
+For a production build, run `npm run build` and serve `frontend/dist/` from any static host;
+set `VITE_API_BASE` at build time to point at the deployed backend.
 
 ### 6.6 Verify everything is alive (Terminal 3)
 
@@ -513,10 +521,10 @@ Invoke-RestMethod http://127.0.0.1:8000/healthz | Format-List
     -UseBasicParsing).Content
 
 # Open the UI in the browser
-start http://localhost:8501
+start http://localhost:5173
 ```
 
-> Three terminals are recommended because the API and Streamlit processes
+> Three terminals are recommended because the API and the Vite dev server
 > are long-running and should not be killed while probing. Windows Terminal
 > split-panes work well — `.venv` activation is per pane.
 
@@ -561,7 +569,7 @@ uvicorn main:app --host 127.0.0.1 --port 8000
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-pytest -q              # all 47 tests
+pytest -q              # all tests (~80)
 pytest -q -m "not network"   # offline subset (CI-friendly)
 ```
 ## Docker Installtion
@@ -573,7 +581,7 @@ Copy-Item .env.example .env -Force
 
 docker compose up -d --build
 docker compose logs -f api
-start http://localhost:8501          # Streamlit UI
+start http://localhost:5173          # React UI
 start http://localhost:8000/healthz  # API
 ```
 
@@ -584,7 +592,7 @@ Get-Content .env.obs | Add-Content .env     # if .env.obs exists in the clone
 docker compose --profile obs up -d
 start http://localhost:3000         # Grafana (admin / admin)
 start http://localhost:9090         # Prometheus
-start http://localhost:8501         # UI
+start http://localhost:5173         # React UI
 start http://localhost:8000/healthz # API
 ```
 
@@ -879,7 +887,7 @@ rate_limit_hits_total 0
 ### 10.4 Pytest
 
 ```powershell
-pytest -q                    # all 47 tests
+pytest -q                    # all tests (~80)
 pytest -q -m "not network"   # offline subset (CI-friendly)
 ```
 
@@ -1106,7 +1114,7 @@ working.
 | # | Step | Expected |
 |---|---|---|
 | 1 | `Invoke-RestMethod http://127.0.0.1:8000/healthz` | `overall: up`, components all `up` |
-| 2 | `pytest -q` | 47 tests, all green |
+| 2 | `pytest -q` | ~80 tests, all green |
 | 3 | `Invoke-RestMethod http://127.0.0.1:8000/chat -Method POST -Body '{"session_id":"smoke","message":"Where is order ORD001?"}'` | tool short-circuits → `Order ORD001 is Shipped. Estimated delivery: 2026-07-02.` |
 | 4 | `Invoke-RestMethod http://127.0.0.1:8000/chat -Method POST -Body '{"session_id":"smoke","message":"Do you have a wireless mouse?"}'` | tool short-circuits → `Wireless Mouse, $25, 12 in stock.` |
 | 5 | `Invoke-RestMethod http://127.0.0.1:8000/chat -Method POST -Body '{"session_id":"smoke","message":"What is your return policy?"}'` | cites a chunk from `data/notes.txt`, `gate.decision` is `answered` or `fallback` |

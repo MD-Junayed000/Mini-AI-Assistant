@@ -62,20 +62,39 @@ def product_search(query: str, top_k: int = 5) -> list[dict[str, Any]]:
     """Naive substring + tag search across the product catalog."""
     products = _maybe_reload("products", "products.json")
     q = query.lower().strip()
+    # Generic catalog-browse phrases — return the full catalog so the user
+    # gets a real answer instead of an empty result.
+    browse = {
+        "",
+        "products",
+        "product",
+        "catalog",
+        "catalogue",
+        "all",
+        "all products",
+        "what do you sell",
+        "what do we sell",
+        "what products do you sell",
+        "what products do we sell",
+    }
+    if q in browse:
+        return list(products)[:top_k]
+
     scored: list[tuple[int, dict[str, Any]]] = []
     for p in products:
         hay = " ".join(
             [
-                p["name"].lower(),
-                p["category"].lower(),
-                " ".join(p.get("tags", [])).lower(),
-                p["sku"].lower(),
+                str(p.get("name", "")).lower(),
+                str(p.get("category", "")).lower(),
+                str(p.get("description", "")).lower(),
+                " ".join(p.get("tags", []) or []).lower(),
+                str(p.get("sku", "")).lower(),
             ]
-        )
-        score = sum(1 for token in q.split() if token in hay)
+        ).strip()
+        score = sum(1 for token in q.split() if token and token in hay)
         if score > 0:
             scored.append((score, p))
-    scored.sort(key=lambda x: (-x[0], x[1]["sku"]))
+    scored.sort(key=lambda x: (-x[0], x[1].get("sku", "")))
     return [p for _, p in scored[:top_k]]
 
 

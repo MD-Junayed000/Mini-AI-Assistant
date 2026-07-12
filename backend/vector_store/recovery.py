@@ -1,25 +1,9 @@
 """Auto-recovery for a corrupted ChromaDB persistent directory.
 
-When a Windows process is killed mid-upsert (e.g. by an uncatchable native
-fault in torch/docling), Chroma's HNSW files can be left half-written.
-The next read or write then segfaults inside chromadb's Rust code, which
-Python cannot catch — so /ingest returns 200 with chunks=0 instead of
-failing cleanly, and the operator has to manually move the directory aside
-before the next request can succeed.
-
-This module offers `auto_recover_if_corrupt(persist_dir)`:
-
-  - probes the directory with a cheap `chromadb.PersistentClient.heartbeat()`
-    call in an isolated subprocess (so a native crash can never reach the
-    FastAPI worker);
-  - if the probe fails, renames `persist_dir` to `persist_dir.bak-<stamp>`
-    and recreates a fresh empty directory in its place.
-
-The next ingestion request transparently builds the collection from
-`data/` because `ChromaStore.__init__` always calls `get_or_create_collection`.
-
-The quarantine is move-aside, never wipe: the corrupt files are kept under
-the `.bak-<stamp>` suffix so the operator can inspect or restore them later.
+A Windows process killed mid-upsert can leave Chroma's HNSW files
+half-written; the next access segfaults in Rust code Python can't catch.
+``auto_recover_if_corrupt`` probes in an isolated subprocess and quarantines
+the dir to ``.bak-<stamp>`` so the next ingest rebuilds from ``data/``.
 """
 from __future__ import annotations
 
@@ -51,13 +35,7 @@ _PROBE_SCRIPT = (
 def _probe_chroma_isolated(persist_dir: Path, timeout: float = 15.0) -> tuple[bool, str | None]:
     """Spawn a child interpreter to probe chromadb. Returns (healthy, reason)."""
     if not persist_dir.exists():
-        # Nothing to probe — a missing dir is always "healthy" because
-        # the next ingest will recreate the collection.
         return True, None
-    # An empty directory is the expected post-recovery state; chromadb's
-    # `heartbeat()` on it would raise "no such table" or similar. We
-    # treat an empty dir as already-healthy so subsequent calls become
-    # no-ops instead of creating a fresh backup every time.
     if not any(persist_dir.iterdir()):
         return True, None
     try:
@@ -83,7 +61,6 @@ def _probe_chroma_isolated(persist_dir: Path, timeout: float = 15.0) -> tuple[bo
         except json.JSONDecodeError:
             pass
 
-    # Native crash — exit non-zero, no usable JSON. Treat as unhealthy.
     stderr_first = next(
         (ln.strip() for ln in (proc.stderr or "").splitlines() if ln.strip()),
         f"chroma_probe_exitcode_{proc.returncode}",
@@ -97,26 +74,13 @@ def auto_recover_if_corrupt(
     timeout: float = 15.0,
     force: bool = False,
 ) -> bool:
-    """Quarantine a corrupt Chroma directory.
+    """Quarantine a corrupt Chroma directory. Returns True if a recovery action was taken.
 
-    Returns True if a recovery action was taken (directory was moved aside).
-    Returns False if the directory is healthy or already missing.
-
-    The function is **idempotent and safe**:
-      - Move-aside only, never delete.
-      - The renamed directory keeps a `.bak-<UTC-stamp>` suffix so it can
-        be inspected or restored by hand.
-      - A fresh empty directory is created in its place so the next ingest
-        call builds the collection from `data/` transparently.
-      - Failures are logged but never raised; callers should fall back to
-        the in-process error path.
-
-    Set `force=True` to quarantine unconditionally (e.g. when an operator
-    runs this from the recovery script after a known crash).
+    Move-aside only; the ``.bak-<UTC-stamp>`` suffix is preserved for inspection.
+    Failures are logged, never raised. Pass ``force=True`` to quarantine unconditionally.
     """
     persist_dir = Path(persist_dir)
     if not persist_dir.exists():
-        # Missing dir is the expected post-recovery state — do nothing.
         return False
 
     healthy, reason = _probe_chroma_isolated(persist_dir, timeout=timeout)
@@ -126,9 +90,6 @@ def auto_recover_if_corrupt(
     stamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
     base_backup = persist_dir.with_name(f"{persist_dir.name}.bak-{stamp}")
     backup = base_backup
-    # Disambiguate if two recoveries happen within the same second — the
-    # second one would otherwise fail with WinError 183 on the copytree
-    # fallback path.
     suffix = 1
     while backup.exists():
         backup = base_backup.with_name(f"{base_backup.name}-{suffix}")
@@ -142,10 +103,6 @@ def auto_recover_if_corrupt(
     try:
         shutil.move(str(persist_dir), str(backup))
     except OSError as exc:
-        # shutil.move on Windows is MoveFileExW; if the destination already
-        # exists OR a file in the source is locked (mismatched WinError 32
-        # from the test, 17/39 in production), we fall back to a copy +
-        # rmtree so the quarantine still succeeds.
         log.warning("chroma_auto_recovery_move_failed_falling_back", error=str(exc))
         try:
             shutil.copytree(str(persist_dir), str(backup), dirs_exist_ok=False)
@@ -153,7 +110,6 @@ def auto_recover_if_corrupt(
         except OSError as e2:
             log.error("chroma_auto_recovery_copytree_failed", error=str(e2))
             return False
-    # Recreate the empty directory so ChromaStore can init cleanly.
     persist_dir.mkdir(parents=True, exist_ok=True)
     log.info(
         "chroma_auto_recovery_complete",

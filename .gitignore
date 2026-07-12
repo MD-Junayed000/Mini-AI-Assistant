@@ -22,6 +22,7 @@ build/
 # ---------------------------------------------------------------------------
 .chroma/
 .chroma.*
+.chroma.bak*
 # ---------------------------------------------------------------------------
 # Uploaded documents (PDF / TXT / MD) — written by POST /ingest into ./data,
 # chunked into Chroma, then never re-read at runtime. Ignore the raw files

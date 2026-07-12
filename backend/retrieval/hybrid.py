@@ -98,7 +98,10 @@ async def retrieve(query: str, top_k: int = 8) -> list[Retrieved]:
 
     score_by_idx = {idx: sc for idx, sc in scored}
     for i, c in enumerate(cand):
-        c.rerank_score = score_by_idx.get(i)
+        sc = score_by_idx.get(i)
+        # Coerce to a native float — some rerankers return numpy scalars,
+        # which Pydantic and the Mongo BSON encoder both reject.
+        c.rerank_score = float(sc) if sc is not None else None
     cand.sort(key=lambda c: (c.rerank_score is None, -(c.rerank_score or c.rrf_score)))
 
     if cand and cand[0].rerank_score is not None:

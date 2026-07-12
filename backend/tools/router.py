@@ -175,7 +175,10 @@ def parse_tool_intent(text: str) -> ToolCall | None:
     if name not in _TOOL_SCHEMA:
         raise ValidationError(f"tool_unknown: {name}")
     schema = _TOOL_SCHEMA[name]
-    for req in schema["required"]:
+    # The in-memory schema mirrors the OpenAI tool-call shape so it can be
+    # serialised verbatim by `tool_schema_json` — `required` lives inside
+    # the `parameters` object.
+    for req in schema["parameters"]["required"]:
         if req not in args:
             raise ValidationError(f"tool_arg_missing: {req}")
     return ToolCall(name=name, args=args)

@@ -21,6 +21,7 @@ def _env_defaults(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("OLLAMA_FALLBACK_MODEL", "gpt-oss:120b-cloud")
     monkeypatch.setenv("HF_INFERENCE_BASE_URL", "https://router.test/v1")
     monkeypatch.setenv("HF_INFERENCE_API_KEY", "test-hf")
+    monkeypatch.setenv("CHROMA_USE_CLOUD", "false")
     monkeypatch.setenv("CHROMA_PERSIST_DIR", str(tmp_path / "chroma"))
     monkeypatch.setenv("BM25_CACHE_PATH", str(tmp_path / "chroma" / "bm25.pkl"))
     monkeypatch.setenv("MONGODB_URI", "mongodb://localhost:27017/test")

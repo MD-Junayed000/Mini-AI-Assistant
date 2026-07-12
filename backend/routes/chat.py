@@ -79,11 +79,11 @@ async def _track_http(request: Request, call_next):  # type: ignore[no-untyped-d
 # ---------- Routes -------------------------------------------------------
 @router.get("/")
 async def root() -> dict:
-    """Friendly landing — the UI lives at the Streamlit port (default 8501)."""
+    """Friendly landing — points at the SPA and lists available endpoints."""
     return {
-        "service": "MiniCo Docs",
-        "version": "0.2.2",
-        "ui": "http://localhost:8501 (run `streamlit run ui/streamlit_app.py`)",
+        "service": "Mini AI Assistant",
+        "version": "0.3.0",
+        "ui": "http://localhost:5173 (run `npm run dev` from frontend/)",
         "endpoints": {
             "POST /chat": "send a chat message (JSON: {session_id, message})",
             "POST /ingest": "upload a PDF/TXT/MD document for retrieval",
@@ -119,9 +119,9 @@ async def ingest(file: UploadFile = File(...)) -> dict:
         "backend": result.get("backend", "unknown"),
         "fallback_reason": result.get("fallback_reason"),
     }
-    # Surface a one-line error string when extraction produced no chunks —
-    # the Streamlit UI uses this to explain why nothing was indexed
-    # (corrupt PDF, empty text, etc.) without a separate toast.
+    # Surface a one-line error string when extraction produced no chunks so
+    # the React UI can explain why nothing was indexed (corrupt PDF, empty
+    # text, etc.) inline.
     err = result.get("error")
     if err and result.get("chunks", 0) == 0:
         body["error"] = err
@@ -129,10 +129,8 @@ async def ingest(file: UploadFile = File(...)) -> dict:
 
 
 @router.post("/chat")
-# Honour the global rate limit configured in Settings.
-# (We can't reference `limiter._default_limits` here — slowapi prints
-# "couldn't parse rate limit string '<LimitGroup object ...>'" because the
-# decorator stringifies the object. A plain string from settings works.)
+# Honour the global rate limit. A plain string is required — slowapi
+# prints "<LimitGroup object ...>" if you pass the parsed object directly.
 @limiter.limit(f"{_settings.rate_limit_per_min}/minute")
 async def chat(request: Request, body: ChatIn, memory: Memory = Depends(get_memory)) -> dict:
     tr = tracer()
@@ -171,10 +169,9 @@ async def get_session_messages(
 ) -> dict:
     """Return the conversation history for one session, oldest first.
 
-    The Streamlit sidebar uses this when the user switches to a previous
-    chat: we fetch the server's record of that conversation so the main
-    pane shows the same messages regardless of whether the user has
-    kept the local Streamlit state alive across the switch.
+    The React sidebar uses this when the user switches to a previous chat:
+    we fetch the server's record of that conversation so the main pane
+    shows the same messages regardless of client state.
     """
     msgs = await memory.history(session_id, limit=limit)
     # Strip internal-only fields; the UI only needs role/content/sources/
@@ -198,7 +195,7 @@ async def get_session_messages(
 async def list_sessions(memory: Memory = Depends(get_memory)) -> dict:
     """All known sessions, newest activity first.
 
-    The Streamlit sidebar uses this to render a list of past chats that the
+    The React sidebar uses this to render a list of past chats that the
     user can switch between without losing the previous conversation.
     """
     sessions = await memory.list_sessions()
@@ -260,8 +257,8 @@ async def admin_list_sources() -> dict:
     """List every distinct source currently in the vector store.
 
     Returns one entry per upload with the chunk count, sorted by chunk count
-    descending then source name ascending. Used by the Streamlit sidebar to
-    render a "Clear this document" button per indexed file.
+    descending then source name ascending. Used by the sidebar to render a
+    "Clear this document" button per indexed file.
     """
     from backend.vector_store.chroma_store import ChromaStore
 

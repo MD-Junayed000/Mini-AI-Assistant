@@ -23,9 +23,11 @@ function overallToState(h: HealthResponse | null): State {
 interface Props {
   /** When true, also render the per-component list (used inside the popup). */
   detailed?: boolean;
+  /** When true, render only the inline state word (used inside the header button). */
+  compact?: boolean;
 }
 
-export function StatusPill({ detailed = false }: Props) {
+export function StatusPill({ detailed = false, compact = false }: Props) {
   const [h, setH] = useState<HealthResponse | null>(null);
 
   useEffect(() => {
@@ -59,6 +61,15 @@ export function StatusPill({ detailed = false }: Props) {
   const state = overallToState(h);
   const comps = h?.components ?? {};
   const showDetails = detailed && Object.keys(comps).length > 0;
+
+  if (compact) {
+    return (
+      <span className={`status-inline ${state}`}>
+        <span className="dot" />
+        {STATE_LABEL[state]}
+      </span>
+    );
+  }
 
   return (
     <div className="status-block">

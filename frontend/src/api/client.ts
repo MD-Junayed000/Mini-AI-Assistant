@@ -29,6 +29,8 @@ export interface Message {
   ts?: number;
   elapsed_s?: number | null;
   sources?: Source[];
+  /** Client-only flag: the bubble is a placeholder awaiting the response. */
+  pending?: boolean;
 }
 
 export interface SessionSummary {

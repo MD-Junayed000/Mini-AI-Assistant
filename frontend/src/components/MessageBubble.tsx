@@ -8,18 +8,35 @@ interface Props {
 
 export function MessageBubble({ message, pending = false }: Props) {
   const role = message.role === "user" ? "user" : "assistant";
+  const isPending = pending || message.pending === true;
+  const elapsedLabel =
+    message.elapsed_s != null ? `${message.elapsed_s.toFixed(1)} s` : null;
   return (
-    <div className={`message ${role}${pending ? " pending" : ""}`}>
+    <div className={`message ${role}${isPending ? " pending" : ""}`}>
       <div className="bubble">
         <div className="bubble-content">
-          {message.content || (
+          {message.content && message.content.length > 0 ? (
+            message.content
+          ) : isPending ? (
+            <div className="gen-skeleton" aria-label="Generating response">
+              <span className="dot1" />
+              <span className="dot2" />
+              <span className="dot3" />
+              <span className="gen-text">Generating response…</span>
+            </div>
+          ) : (
             <em style={{ color: "var(--text-muted)" }}>(empty)</em>
           )}
-          {pending && <span className="cursor" aria-hidden="true" />}
+          {isPending && message.content && (
+            <span className="cursor" aria-hidden="true" />
+          )}
         </div>
-        {message.elapsed_s != null && (
-          <div className="meta">{message.elapsed_s.toFixed(1)} s</div>
-        )}
+        <div className="meta-row">
+          {elapsedLabel && <span className="meta">{elapsedLabel}</span>}
+          {isPending && (
+            <span className="meta pending-label">thinking…</span>
+          )}
+        </div>
         {message.sources && message.sources.length > 0 && (
           <details className="sources">
             <summary>{message.sources.length} source(s)</summary>

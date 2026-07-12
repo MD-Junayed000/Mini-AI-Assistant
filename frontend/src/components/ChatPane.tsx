@@ -53,27 +53,59 @@ export const ChatPane = forwardRef<ChatPaneHandle, Props>(function ChatPane(
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [statusOpen, setStatusOpen] = useState(false);
+  const [loadingSession, setLoadingSession] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   const statusRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (!sessionId) {
       setMessages([]);
+      setLoadingSession(false);
       return;
     }
+    // Reset state synchronously so the previous chat's messages don't
+    // briefly flash while the new fetch is in flight. Loading state shows
+    // a spinner instead of the empty hero.
+    setMessages([]);
+    setError(null);
+    setLoadingSession(true);
     let cancelled = false;
     (async () => {
       try {
         const r = await getSessionMessages(sessionId);
         if (!cancelled) setMessages(r.messages ?? []);
-      } catch {
-        if (!cancelled) setMessages([]);
+      } catch (e: any) {
+        // Surface this so a broken session fetch is visible instead of a
+        // silent empty-state hero. The previous silent fallback made
+        // sessions look "vanishing".
+        if (!cancelled) {
+          setMessages([]);
+          setError(
+            (e?.body?.friendly ??
+              e?.body?.error ??
+              e?.message ??
+              "Couldn't load this chat.") +
+            " — Try Refresh list in the sidebar.",
+          );
+        }
+      } finally {
+        if (!cancelled) setLoadingSession(false);
       }
     })();
     return () => {
       cancelled = true;
     };
   }, [sessionId]);
+
+  // Focus the composer whenever a new session is opened so the user can
+  // type immediately without clicking the textarea first.
+  useEffect(() => {
+    if (sessionId && !busy && !loadingSession) {
+      // Defer so the layout has settled.
+      window.setTimeout(() => textareaRef.current?.focus(), 50);
+    }
+  }, [sessionId, busy, loadingSession]);
 
   useEffect(() => {
     const el = bodyRef.current;
@@ -97,42 +129,73 @@ export const ChatPane = forwardRef<ChatPaneHandle, Props>(function ChatPane(
     if (!text || busy) return;
     setError(null);
     if (textOverride === undefined) setDraft("");
-    const userMsg: Message = { role: "user", content: text, ts: Date.now() / 1000 };
-    setMessages((m) => [...m, userMsg]);
-    setBusy(true);
     const t0 = performance.now();
+    const nowTs = Date.now() / 1000;
+    const userMsg: Message = { role: "user", content: text, ts: nowTs };
+    // Insert a placeholder assistant message with a spinner so the user sees
+    // that the request is in flight (and how long it's been). The pending
+    // timer is updated via a setInterval cleared on response/error.
+    const placeholder: Message = {
+      role: "assistant",
+      content: "",
+      ts: nowTs,
+      pending: true,
+    };
+    setMessages((m) => [...m, userMsg, placeholder]);
+    setBusy(true);
+
+    const tickInterval = window.setInterval(() => {
+      const elapsed = (performance.now() - t0) / 1000;
+      setMessages((m) =>
+        m.map((mm, i) =>
+          i === m.length - 1 && mm.pending
+            ? { ...mm, elapsed_s: elapsed }
+            : mm,
+        ),
+      );
+    }, 200);
+
     try {
       const r: ChatResponse = await sendChat({ session_id: sessionId, message: text });
       const elapsed = (performance.now() - t0) / 1000;
-      setMessages((m) => [
-        ...m,
-        {
-          role: "assistant",
-          content: r.answer ?? "(no answer)",
-          sources: r.sources ?? [],
-          elapsed_s: elapsed,
-          ts: Date.now() / 1000,
-        },
-      ]);
+      window.clearInterval(tickInterval);
+      setMessages((m) =>
+        m.map((mm, i) =>
+          i === m.length - 1 && mm.pending
+            ? {
+                role: "assistant",
+                content: r.answer ?? "(no answer)",
+                sources: r.sources ?? [],
+                elapsed_s: elapsed,
+                ts: Date.now() / 1000,
+              }
+            : mm,
+        ),
+      );
       onSessionsTouched();
     } catch (e: any) {
       const elapsed = (performance.now() - t0) / 1000;
+      window.clearInterval(tickInterval);
       const friendly =
         e?.body?.friendly ??
         e?.body?.error ??
         e?.message ??
         "Something went wrong.";
       setError(friendly);
-      setMessages((m) => [
-        ...m,
-        {
-          role: "assistant",
-          content: `Error: ${friendly}`,
-          elapsed_s: elapsed,
-          ts: Date.now() / 1000,
-        },
-      ]);
+      setMessages((m) =>
+        m.map((mm, i) =>
+          i === m.length - 1 && mm.pending
+            ? {
+                role: "assistant",
+                content: `Error: ${friendly}`,
+                elapsed_s: elapsed,
+                ts: Date.now() / 1000,
+              }
+            : mm,
+        ),
+      );
     } finally {
+      window.clearInterval(tickInterval);
       setBusy(false);
     }
   };
@@ -154,12 +217,12 @@ export const ChatPane = forwardRef<ChatPaneHandle, Props>(function ChatPane(
       <header className="main-header">
         <div className="header-row">
           <div className="brand-block">
-            <h1 className="brand-title">Mini AI Assistant</h1>
-            <p className="brand-tagline">
-              Retrieval-augmented chat over your documents and tools.
-              <span className="tagline-divider" aria-hidden="true">·</span>
-              <span className="tagline-hint">Enter to send · Shift+Enter for newline</span>
-            </p>
+            <h1 className="brand-title">
+              Mini AI Assistant
+              <span className="brand-tagline-inline">
+                Retrieval-augmented chat over your documents and tools.
+              </span>
+            </h1>
           </div>
           <div className="status-slot" ref={statusRef}>
             <button
@@ -169,8 +232,7 @@ export const ChatPane = forwardRef<ChatPaneHandle, Props>(function ChatPane(
               aria-haspopup="dialog"
               aria-expanded={statusOpen}
             >
-              <span className="api-dot" />
-              <span className="api-dot-label">API</span>
+              <span className="api-dot-label">API: <StatusPill compact /></span>
             </button>
             {statusOpen && (
               <div className="api-popup" role="dialog" aria-label="API status">
@@ -235,12 +297,19 @@ export const ChatPane = forwardRef<ChatPaneHandle, Props>(function ChatPane(
             rows={1}
           />
           <button
-            className="primary"
+            className="composer-send"
             disabled={!sessionId || busy || !draft.trim()}
             onClick={() => void send()}
+            title="Send message"
+            aria-label="Send message"
           >
-            {busy ? "…" : "Send"}
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+              <path d="M3 11.5L21 3l-8.5 18-2.2-7.3L3 11.5z" fill="currentColor"/>
+            </svg>
           </button>
+        </div>
+        <div className="composer-hint">
+          <span className="composer-hint-text">Enter to send · Shift+Enter for newline</span>
         </div>
       </div>
     </section>

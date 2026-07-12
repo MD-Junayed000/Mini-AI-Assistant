@@ -4,6 +4,7 @@
 # annotations into strings, raising PydanticUndefinedAnnotation at import time.
 
 from pathlib import Path
+from typing import Any
 
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
@@ -213,12 +214,15 @@ async def delete_session(session_id: str, memory: Memory = Depends(get_memory)) 
 async def rename_session(
     session_id: str, body: RenameIn, memory: Memory = Depends(get_memory)
 ) -> dict:
-    """Rename a session. We don't persist titles (Memory has no metadata table);
-    a successful call returns the new title so the UI can keep its own map in
-    sync. The rename is a no-op on the server side — the auto-derived title
-    will re-appear next time the page reloads.
+    """Persist a user-set title for a session.
+
+    The new title is stored in the sidecar metadata collection (or the
+    in-process cache when Mongo is cold) so `GET /sessions` returns it on
+    subsequent reloads. UI's local title map is kept in sync for instant
+    feedback even if the persistence path is momentarily unavailable.
     """
     title = body.title.strip()
+    await memory.rename_session(session_id, title)
     return {"session_id": session_id, "title": title}
 
 
@@ -262,7 +266,7 @@ async def admin_list_sources() -> dict:
     """
     from backend.vector_store.chroma_store import ChromaStore
 
-    store = ChromaStore()
+    store = ChromaStore.instance()
     sources = await store.list_sources()
     total_chunks = sum(s["chunks"] for s in sources)
     return {
@@ -286,7 +290,7 @@ async def admin_clear_source(body: ClearSourceIn) -> dict:
     """
     from backend.vector_store.chroma_store import ChromaStore
 
-    store = ChromaStore()
+    store = ChromaStore.instance()
     removed = await store.delete_by_source(body.source)
     BM25Index.rebuild()
     log.info(
@@ -309,7 +313,7 @@ async def admin_clear_kb() -> dict:
     """
     from backend.vector_store.chroma_store import ChromaStore
 
-    store = ChromaStore()
+    store = ChromaStore.instance()
     removed = await store.clear_all()
     BM25Index.rebuild()
     log.info("kb_cleared_all", removed=removed)

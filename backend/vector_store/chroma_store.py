@@ -47,7 +47,29 @@ class ChromaStore:
 
     Supports Chroma Cloud (default) and local persistent mode. The public
     method signatures are identical across backends.
+
+    The class caches one instance per `collection` name (process-wide) so that
+    the sentence-transformers model download + Chroma client setup happen
+    exactly once. The first `/chat` or `/admin/kb/sources` request pays the
+    full cold-start cost; every subsequent request reuses the same store
+    (and the same embedding function) so retrieval stays fast.
     """
+
+    _INSTANCES: dict[str, "ChromaStore"] = {}
+
+    @classmethod
+    def instance(cls, collection: str | None = None) -> "ChromaStore":
+        """Return the cached store for this collection, building it on first use.
+
+        Cheap to call from hot paths; the expensive constructor runs once.
+        """
+        name = collection or get_settings().chroma_collection
+        existing = cls._INSTANCES.get(name)
+        if existing is not None:
+            return existing
+        store = cls(collection=name)
+        cls._INSTANCES[name] = store
+        return store
 
     def __init__(self, collection: str | None = None) -> None:
         s = get_settings()

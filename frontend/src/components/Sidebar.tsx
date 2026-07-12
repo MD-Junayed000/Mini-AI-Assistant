@@ -1,67 +1,108 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   clearKbAll,
   clearKbSource,
   deleteSession,
   ingestFile,
   listKbSources,
-  listSessions,
   renameSession,
   type KbSourcesResponse,
-  type SessionSummary,
 } from "../api/client";
+
+interface LocalChat {
+  sid: string;
+  lastActive: number;
+  title: string;
+  serverKnown: boolean;
+  everUsed: boolean;
+}
 
 interface Props {
   activeSid: string | null;
   titles: Record<string, string>;
+  sessions: LocalChat[];
   onTitlesChange: (next: Record<string, string>) => void;
   onNewChat: () => void;
   onSwitchChat: (sid: string) => void;
+  onDeleteChat: (sid: string) => void;
+  onSessionsTouched: () => void;
   onKbChanged: () => void;
+  refreshTrigger: number;
+}
+
+type Notice = { kind: "ok" | "warn" | "err" | "info"; text: string };
+
+function shortName(source: string): string {
+  const m = source.replace(/\\/g, "/").split("/").pop();
+  return m ?? source;
 }
 
 export function Sidebar(props: Props) {
-  const { activeSid, titles, onTitlesChange, onNewChat, onSwitchChat, onKbChanged } = props;
+  const {
+    activeSid,
+    titles,
+    sessions,
+    onTitlesChange,
+    onNewChat,
+    onSwitchChat,
+    onDeleteChat,
+    onSessionsTouched,
+    onKbChanged,
+    refreshTrigger,
+  } = props;
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [sessions, setSessions] = useState<SessionSummary[]>([]);
   const [kb, setKb] = useState<KbSourcesResponse | null>(null);
-  const [ingestNotice, setIngestNotice] = useState<
-    { kind: "ok" | "warn" | "err"; text: string } | null
-  >(null);
+  const [kbBusy, setKbBusy] = useState(false);
+  const [notice, setNotice] = useState<Notice | null>(null);
   const [clearAllArmed, setClearAllArmed] = useState(false);
+  const [clearSourceArmed, setClearSourceArmed] = useState<string | null>(null);
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
 
-  const refreshAll = async () => {
+  /** Fetch KB sources. Failures are silent; the previous good list stays
+   *  on screen so the user doesn't see "No documents indexed yet" flash. */
+  const refreshKb = useCallback(async () => {
     try {
-      const [s, k] = await Promise.all([listSessions(), listKbSources()]);
-      setSessions(s.sessions ?? []);
+      const k = await listKbSources();
       setKb(k);
     } catch {
-      /* StatusPill surfaces the failure */
+      /* keep previous KB state */
     }
-  };
-
-  useEffect(() => {
-    refreshAll();
-    const t = window.setInterval(refreshAll, 15_000);
-    return () => window.clearInterval(t);
   }, []);
 
+  useEffect(() => {
+    void refreshKb();
+    const t = window.setInterval(refreshKb, 15_000);
+    return () => window.clearInterval(t);
+  }, [refreshKb]);
+
+  // Re-fetch when App.tsx signals an external change (chat sent, +New chat).
+  useEffect(() => {
+    void refreshKb();
+  }, [refreshTrigger, refreshKb]);
+
+  // Re-fetch when other components broadcast a KB change (file upload).
+  useEffect(() => {
+    const handler = () => void refreshKb();
+    window.addEventListener("mini_ai:kb-changed", handler);
+    return () => window.removeEventListener("mini_ai:kb-changed", handler);
+  }, [refreshKb]);
+
   const handleUpload = async (file: File) => {
-    setIngestNotice(null);
+    setNotice({ kind: "info", text: `Uploading ${file.name}…` });
+    setKbBusy(true);
     try {
       const r = await ingestFile(file);
       if (r.chunks === 0) {
         const why = r.error ?? r.fallback_reason ?? "no text could be extracted";
         if (r.fallback_reason === "chroma_restart_required") {
-          setIngestNotice({
+          setNotice({
             kind: "warn",
             text:
               "Vector index is unrecoverable in this process. Restart the API and upload again.",
           });
         } else {
-          setIngestNotice({ kind: "err", text: `Couldn't index ${file.name}: ${why}` });
+          setNotice({ kind: "err", text: `Couldn't index ${file.name}: ${why}` });
         }
       } else {
         let msg = `Indexed ${r.chunks} chunks from ${r.source}`;
@@ -70,68 +111,86 @@ export function Sidebar(props: Props) {
         } else if (r.backend && r.backend !== "docling") {
           msg += ` — using ${r.backend}`;
         }
-        setIngestNotice({ kind: "ok", text: msg });
+        setNotice({ kind: "ok", text: msg });
       }
       onKbChanged();
-      await refreshAll();
+      // Chroma Cloud can take a beat to make a newly-upserted chunk
+      // visible to the metadata scan that powers /admin/kb/sources, so
+      // we refresh twice: once immediately + once after a short delay.
+      await refreshKb();
+      window.setTimeout(() => void refreshKb(), 1_500);
     } catch (e) {
-      setIngestNotice({ kind: "err", text: String(e) });
+      setNotice({ kind: "err", text: `Upload failed: ${String(e)}` });
+    } finally {
+      setKbBusy(false);
     }
   };
 
   const handleClearSource = async (source: string) => {
+    setNotice(null);
     try {
       const r = await clearKbSource(source);
-      setIngestNotice({
+      setNotice({
         kind: "ok",
-        text: `Cleared ${r.removed} chunk(s) from ${source.split(/[\\/]/).pop()}.`,
+        text: `Cleared ${r.removed} chunk(s) from ${shortName(source)}.`,
       });
       onKbChanged();
-      await refreshAll();
+      await refreshKb();
     } catch (e) {
-      setIngestNotice({ kind: "err", text: `Clear failed: ${String(e)}` });
+      setNotice({ kind: "err", text: `Clear failed: ${String(e)}` });
+    } finally {
+      setClearSourceArmed(null);
     }
   };
 
   const handleClearAll = async () => {
+    setNotice(null);
     try {
       const r = await clearKbAll();
-      setIngestNotice({ kind: "ok", text: `Cleared ${r.removed} chunk(s) from the KB.` });
+      setNotice({ kind: "ok", text: `Cleared ${r.removed} chunk(s) from the KB.` });
       onKbChanged();
-      await refreshAll();
+      await refreshKb();
     } catch (e) {
-      setIngestNotice({ kind: "err", text: `Clear failed: ${String(e)}` });
+      setNotice({ kind: "err", text: `Clear failed: ${String(e)}` });
+    } finally {
+      setClearAllArmed(false);
     }
   };
 
+  /** Delete a session both on the server (best effort) and locally. */
   const handleDeleteSession = async (sid: string) => {
     try {
       await deleteSession(sid);
     } catch {
-      /* UI still removes it locally */
+      /* server may be down — UI still removes locally */
     }
     const next = { ...titles };
     delete next[sid];
     onTitlesChange(next);
+    onDeleteChat(sid);
+    onSessionsTouched();
     if (activeSid === sid) onNewChat();
-    await refreshAll();
   };
 
-  const handleRename = async (sid: string) => {
+  /** Persist the new title via the server (now durable) + update local. */
+  const handleRename = (sid: string) => {
     const v = renameValue.trim();
-    if (!v) return;
-    try {
-      await renameSession(sid, v);
-    } catch {
-      /* server rename is a no-op; local title still updates */
+    if (!v) {
+      setRenameTarget(null);
+      setRenameValue("");
+      return;
     }
+    void renameSession(sid, v).catch(() => {
+      /* server may be down; local map is still authoritative for this session */
+    });
     onTitlesChange({ ...titles, [sid]: v });
     setRenameTarget(null);
     setRenameValue("");
+    onSessionsTouched();
   };
 
-  const labelFor = (s: SessionSummary) =>
-    titles[s.session_id] ?? s.title ?? `session ${s.session_id.slice(0, 8)}`;
+  const totalSources = kb?.total_sources ?? 0;
+  const totalChunks = kb?.total_chunks ?? 0;
 
   return (
     <aside className="sidebar">
@@ -139,56 +198,92 @@ export function Sidebar(props: Props) {
         + New chat
       </button>
 
-      <div>
+      <section className="sb-section">
         <h3>Knowledge Base</h3>
         <p className="caption">Upload a PDF, TXT, or MD file to index it for retrieval.</p>
+        <button
+          type="button"
+          className="upload-btn"
+          onClick={() => fileInputRef.current?.click()}
+          disabled={kbBusy}
+        >
+          {kbBusy ? "Uploading…" : "Choose file to upload"}
+        </button>
         <input
           ref={fileInputRef}
           type="file"
           accept=".pdf,.txt,.md"
-          style={{ marginTop: 6 }}
+          className="upload-input-hidden"
           onChange={(e) => {
             const f = e.target.files?.[0];
-            if (f) handleUpload(f);
+            if (f) void handleUpload(f);
             e.target.value = "";
           }}
         />
-        {ingestNotice && <div className={`notice ${ingestNotice.kind}`}>{ingestNotice.text}</div>}
-      </div>
+        {notice && <div className={`notice ${notice.kind}`}>{notice.text}</div>}
+      </section>
 
       <hr />
 
-      <div>
-        <h3>Indexed documents</h3>
-        {kb && kb.sources && kb.sources.length > 0 ? (
+      <section className="sb-section">
+        <div className="kb-header">
+          <h3>Indexed documents</h3>
+          <span className="kb-pill" title={`${totalSources} source(s), ${totalChunks} chunk(s) total`}>
+            {totalSources} doc · {totalChunks} chunk{totalChunks === 1 ? "" : "s"}
+          </span>
+        </div>
+
+        {kb === null ? (
+          // First-load placeholder: the request is in flight, show a hint
+          // rather than the misleading "No documents indexed yet" string.
+          <p className="caption">Loading indexed documents…</p>
+        ) : kb.sources && kb.sources.length > 0 ? (
           <>
-            <p className="caption">
-              {kb.total_sources} document(s) · {kb.total_chunks} chunk(s) total
-            </p>
-            {kb.sources.map((s) => {
-              const short = s.source.replace(/\\/g, "/").split("/").pop() ?? s.source;
-              return (
-                <div className="kb-row" key={s.source}>
-                  <div>
-                    <div className="src" title={s.source}>{short}</div>
-                    <div className="count">{s.chunks} chunk(s)</div>
+            <div className="kb-list">
+              {kb.sources.map((s) => {
+                const short = shortName(s.source);
+                const armed = clearSourceArmed === s.source;
+                return (
+                  <div className="kb-row" key={s.source}>
+                    <div className="kb-row-main">
+                      <div className="src" title={s.source}>{short}</div>
+                      <div className="count">{s.chunks} chunk{s.chunks === 1 ? "" : "s"}</div>
+                    </div>
+                    {armed ? (
+                      <div className="kb-row-confirm">
+                        <button
+                          className="confirm"
+                          title="Confirm removal"
+                          onClick={() => handleClearSource(s.source)}
+                        >
+                          Confirm
+                        </button>
+                        <button
+                          className="cancel"
+                          title="Cancel"
+                          onClick={() => setClearSourceArmed(null)}
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        className="del"
+                        title={`Remove ${s.chunks} chunk(s) from ${short}`}
+                        aria-label={`Remove ${short}`}
+                        onClick={() => setClearSourceArmed(s.source)}
+                      >
+                        ✕
+                      </button>
+                    )}
                   </div>
-                  <button
-                    className="del"
-                    title={`Clear ${s.chunks} chunk(s) from ${short}`}
-                    onClick={() => handleClearSource(s.source)}
-                  >
-                    ✕
-                  </button>
-                </div>
-              );
-            })}
-            <details style={{ marginTop: 10 }}>
-              <summary style={{ cursor: "pointer", color: "var(--text-muted)" }}>
-                Danger zone
-              </summary>
-              <div style={{ marginTop: 8 }}>
-                <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12 }}>
+                );
+              })}
+            </div>
+            <details className="danger-zone">
+              <summary>Danger zone</summary>
+              <div className="danger-zone-body">
+                <label className="danger-confirm">
                   <input
                     type="checkbox"
                     checked={clearAllArmed}
@@ -199,7 +294,6 @@ export function Sidebar(props: Props) {
                 <button
                   className="danger"
                   disabled={!clearAllArmed}
-                  style={{ width: "100%", marginTop: 8 }}
                   onClick={handleClearAll}
                 >
                   Clear all indexed chunks
@@ -208,72 +302,78 @@ export function Sidebar(props: Props) {
             </details>
           </>
         ) : (
-          <p className="caption">No documents indexed yet.</p>
+          <p className="caption">No documents indexed yet — upload one above.</p>
         )}
-      </div>
+      </section>
 
       <hr />
 
-      <div>
+      <section className="sb-section">
         <h3>Chats</h3>
-        <button onClick={refreshAll} style={{ width: "100%", marginBottom: 8 }}>
-          ↻ Refresh list
-        </button>
-        {sessions.length === 0 && (
+        <p className="caption">{sessions.length} chat{sessions.length === 1 ? "" : "s"} remembered locally.</p>
+        {sessions.length === 0 ? (
           <p className="caption">No chats yet — click + New chat to start one.</p>
+        ) : (
+          <div className="session-list">
+            {sessions.map((s) => {
+              const isActive = s.sid === activeSid;
+              const isRenaming = renameTarget === s.sid;
+              const label = s.title;
+              return (
+                <div className="session-row" key={s.sid}>
+                  <button
+                    className={`open${isActive ? " active" : ""}${s.serverKnown ? "" : " local-only"}`}
+                    disabled={isActive || isRenaming}
+                    onClick={() => onSwitchChat(s.sid)}
+                    title={label}
+                  >
+                    <span className={`dot${isActive ? " on" : ""}`} aria-hidden="true" />
+                    {isRenaming ? (
+                      <input
+                        className="rename-input"
+                        autoFocus
+                        value={renameValue}
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") handleRename(s.sid);
+                          if (e.key === "Escape") {
+                            setRenameTarget(null);
+                            setRenameValue("");
+                          }
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                      />
+                    ) : (
+                      <span className="label">{label}</span>
+                    )}
+                  </button>
+                  {!isRenaming && (
+                    <>
+                      <button
+                        className="rename"
+                        title="Rename this chat"
+                        onClick={() => {
+                          setRenameTarget(s.sid);
+                          setRenameValue(label);
+                        }}
+                      >
+                        ✎
+                      </button>
+                      <button
+                        className="del"
+                        title="Delete this chat"
+                        onClick={() => void handleDeleteSession(s.sid)}
+                      >
+                        ✕
+                      </button>
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         )}
-        {sessions.map((s) => {
-          const isActive = s.session_id === activeSid;
-          const isRenaming = renameTarget === s.session_id;
-          return (
-            <div className="session-row" key={s.session_id}>
-              <button
-                className={`open${isActive ? " active" : ""}`}
-                disabled={isActive || isRenaming}
-                onClick={() => onSwitchChat(s.session_id)}
-                title={labelFor(s)}
-              >
-                <span className={`dot${isActive ? " on" : ""}`} aria-hidden="true" />
-                {isRenaming ? (
-                  <input
-                    className="rename-input"
-                    autoFocus
-                    value={renameValue}
-                    onChange={(e) => setRenameValue(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") handleRename(s.session_id);
-                      if (e.key === "Escape") {
-                        setRenameTarget(null);
-                        setRenameValue("");
-                      }
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                  />
-                ) : (
-                  <span className="label">{labelFor(s)}</span>
-                )}
-              </button>
-              <button
-                className="rename"
-                title="Rename this chat"
-                onClick={() => {
-                  setRenameTarget(s.session_id);
-                  setRenameValue(titles[s.session_id] ?? "");
-                }}
-              >
-                ✎
-              </button>
-              <button
-                className="del"
-                title="Delete this chat permanently"
-                onClick={() => handleDeleteSession(s.session_id)}
-              >
-                ✕
-              </button>
-            </div>
-          );
-        })}
-      </div>
+      </section>
     </aside>
   );
 }

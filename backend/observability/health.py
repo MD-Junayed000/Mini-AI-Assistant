@@ -25,6 +25,7 @@ class HealthSnapshot:
 
 _CACHE: HealthSnapshot | None = None
 _CACHE_LOCK = asyncio.Lock()
+_MONGO_CLIENT: Any = None
 
 
 async def _probe_chroma() -> tuple[str, str]:
@@ -80,14 +81,34 @@ async def _probe_ollama() -> tuple[str, str]:
 
 
 async def _probe_mongo() -> tuple[str, str]:
+    """Long-lived mongo client used for liveness checks.
+
+    Opening a fresh AsyncIOMotorClient + ping on every healthz call was the
+    source of the "down" flicker: cluster discovery takes longer than the
+    2-second budget during cold resolves, and DNS warmups push it over.
+    We cache a single client at module scope so subsequent probes reuse
+    the existing connection pool.
+    """
+    global _MONGO_CLIENT
     try:
         from motor.motor_asyncio import AsyncIOMotorClient  # deferred: only needed when MongoDB is configured
-
-        cx = AsyncIOMotorClient(get_settings().mongodb_uri, serverSelectionTimeoutMS=2000)
-        await cx.admin.command("ping")
-        cx.close()
+        if _MONGO_CLIENT is None:
+            # Mongo Atlas needs ~5-10s on cold DNS; 2s was too tight.
+            _MONGO_CLIENT = AsyncIOMotorClient(
+                get_settings().mongodb_uri,
+                serverSelectionTimeoutMS=5000,
+                connectTimeoutMS=5000,
+            )
+        await _MONGO_CLIENT.admin.command("ping")
         return "mongo", "up"
     except Exception:  # noqa: BLE001
+        # Force a fresh client next time so a transient outage doesn't stick.
+        try:
+            if _MONGO_CLIENT is not None:
+                _MONGO_CLIENT.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _MONGO_CLIENT = None
         return "mongo", "down"
 
 

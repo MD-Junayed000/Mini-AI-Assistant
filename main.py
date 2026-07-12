@@ -1,6 +1,7 @@
 """FastAPI application entrypoint."""
 from __future__ import annotations
 
+import asyncio
 import os
 
 # Silence ChromaDB telemetry BEFORE any chromadb import anywhere in the
@@ -37,6 +38,31 @@ async def lifespan(app: FastAPI):
     mem = Memory()
     install_memory(mem)
     log.info("startup", settings_keys=list(get_settings().model_dump().keys()))
+
+    async def _prewarm_chroma() -> None:
+        """Build the ChromaStore + HF embedding model at startup.
+
+        Without this, the very first /chat or /admin/kb/sources request
+        pays the 60-180s sentence-transformers download cost *during* the
+        request — which the UI interprets as "no response". Loading up front
+        keeps the first real turn snappy.
+        """
+        try:
+            from backend.vector_store.chroma_store import ChromaStore
+
+            def _build() -> None:
+                # Triggers the HF model download + Chroma client init in a
+                # thread so the asyncio event loop stays free.
+                ChromaStore.instance()
+
+            await asyncio.to_thread(_build)
+            log.info("startup_prewarm_done", component="chroma")
+        except Exception as e:  # noqa: BLE001
+            log.warning("startup_prewarm_failed", error=str(e))
+
+    # Best-effort: don't block startup if the model download is slow.
+    asyncio.create_task(_prewarm_chroma())
+
     try:
         yield
     finally:

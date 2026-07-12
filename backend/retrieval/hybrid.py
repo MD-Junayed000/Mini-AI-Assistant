@@ -70,7 +70,7 @@ def _fuse(dense: list[Hit], bm25: list[Any]) -> list[Retrieved]:
 async def retrieve(query: str, top_k: int = 8) -> list[Retrieved]:
     """Hybrid retrieve + rerank."""
     s = get_settings()
-    chroma = ChromaStore()
+    chroma = ChromaStore.instance()
     bm25 = BM25Index.instance()
 
     with STAGE_LATENCY.labels(stage="retrieval").time():

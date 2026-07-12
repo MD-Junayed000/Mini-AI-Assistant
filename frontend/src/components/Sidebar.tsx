@@ -23,7 +23,7 @@ interface Props {
   sessions: LocalChat[];
   onTitlesChange: (next: Record<string, string>) => void;
   onNewChat: () => void;
-  onSwitchChat: (sid: string) => void;
+  onSwitchChat: (sid: string | null) => void;
   onDeleteChat: (sid: string) => void;
   onSessionsTouched: () => void;
   onKbChanged: () => void;
@@ -59,15 +59,11 @@ export function Sidebar(props: Props) {
   const [renameTarget, setRenameTarget] = useState<string | null>(null);
   const [renameValue, setRenameValue] = useState("");
 
-  /** Fetch KB sources. Failures are silent; the previous good list stays
-   *  on screen so the user doesn't see "No documents indexed yet" flash. */
   const refreshKb = useCallback(async () => {
     try {
       const k = await listKbSources();
       setKb(k);
-    } catch {
-      /* keep previous KB state */
-    }
+    } catch {}
   }, []);
 
   useEffect(() => {
@@ -76,12 +72,10 @@ export function Sidebar(props: Props) {
     return () => window.clearInterval(t);
   }, [refreshKb]);
 
-  // Re-fetch when App.tsx signals an external change (chat sent, +New chat).
   useEffect(() => {
     void refreshKb();
   }, [refreshTrigger, refreshKb]);
 
-  // Re-fetch when other components broadcast a KB change (file upload).
   useEffect(() => {
     const handler = () => void refreshKb();
     window.addEventListener("mini_ai:kb-changed", handler);
@@ -114,9 +108,6 @@ export function Sidebar(props: Props) {
         setNotice({ kind: "ok", text: msg });
       }
       onKbChanged();
-      // Chroma Cloud can take a beat to make a newly-upserted chunk
-      // visible to the metadata scan that powers /admin/kb/sources, so
-      // we refresh twice: once immediately + once after a short delay.
       await refreshKb();
       window.setTimeout(() => void refreshKb(), 1_500);
     } catch (e) {
@@ -157,22 +148,21 @@ export function Sidebar(props: Props) {
     }
   };
 
-  /** Delete a session both on the server (best effort) and locally. */
   const handleDeleteSession = async (sid: string) => {
     try {
       await deleteSession(sid);
-    } catch {
-      /* server may be down — UI still removes locally */
-    }
+    } catch {}
+    const remaining = sessions.filter((s) => s.sid !== sid);
     const next = { ...titles };
     delete next[sid];
     onTitlesChange(next);
     onDeleteChat(sid);
     onSessionsTouched();
-    if (activeSid === sid) onNewChat();
+    if (activeSid === sid) {
+      onSwitchChat(remaining[0]?.sid ?? null);
+    }
   };
 
-  /** Persist the new title via the server (now durable) + update local. */
   const handleRename = (sid: string) => {
     const v = renameValue.trim();
     if (!v) {
@@ -180,9 +170,7 @@ export function Sidebar(props: Props) {
       setRenameValue("");
       return;
     }
-    void renameSession(sid, v).catch(() => {
-      /* server may be down; local map is still authoritative for this session */
-    });
+    void renameSession(sid, v).catch(() => {});
     onTitlesChange({ ...titles, [sid]: v });
     setRenameTarget(null);
     setRenameValue("");
@@ -234,8 +222,6 @@ export function Sidebar(props: Props) {
         </div>
 
         {kb === null ? (
-          // First-load placeholder: the request is in flight, show a hint
-          // rather than the misleading "No documents indexed yet" string.
           <p className="caption">Loading indexed documents…</p>
         ) : kb.sources && kb.sources.length > 0 ? (
           <>

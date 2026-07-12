@@ -26,7 +26,6 @@ def configure_logging() -> None:
 
     level = getattr(logging, settings.log_level.upper(), logging.INFO)
 
-    # stdlib root logger — structlog will funnel through this.
     root = logging.getLogger()
     root.setLevel(level)
     # Clear any prior handlers (FastAPI reloads etc.).

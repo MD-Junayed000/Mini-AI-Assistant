@@ -406,13 +406,31 @@ textarea::placeholder {
 
 .kb-row {
   display: grid;
-  grid-template-columns: 1fr 28px;
-  gap: 6px;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: start;
   padding: 6px 8px;
   font-size: 13px;
   background: var(--surface);
   border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.kb-row-main {
+  min-width: 0;
+}
+.kb-row-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
+  justify-content: flex-start;
+  min-width: 96px;
+}
+.kb-row-confirm .confirm,
+.kb-row-confirm .cancel {
+  width: 100%;
+  min-width: 0;
+  padding: 6px 10px;
   border-radius: 8px;
 }
 .kb-row .src {

@@ -9,7 +9,6 @@ from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
 
 REGISTRY = CollectorRegistry()
 
-# ---- HTTP ----------------------------------------------------------------
 HTTP_REQUESTS = Counter(
     "http_requests_total",
     "HTTP requests served, partitioned by method/path/status.",
@@ -24,7 +23,6 @@ HTTP_LATENCY = Histogram(
     registry=REGISTRY,
 )
 
-# ---- Pipeline stages -----------------------------------------------------
 STAGE_LATENCY = Histogram(
     "request_stage_seconds",
     "Per-stage latency. Use histogram_quantile() on this.",
@@ -33,7 +31,6 @@ STAGE_LATENCY = Histogram(
     registry=REGISTRY,
 )
 
-# ---- RAG answerability ---------------------------------------------------
 ANSWERABILITY = Counter(
     "answerability_decisions_total",
     "Count of retrieval answers by decision: grounded | fallback | empty.",
@@ -41,7 +38,6 @@ ANSWERABILITY = Counter(
     registry=REGISTRY,
 )
 
-# ---- Tool calls ----------------------------------------------------------
 TOOL_CALLS = Counter(
     "tool_calls_total",
     "Tool invocations by tool name and outcome.",
@@ -56,7 +52,6 @@ TOOL_LATENCY = Histogram(
     registry=REGISTRY,
 )
 
-# ---- Retrieval -----------------------------------------------------------
 RETRIEVAL_RESULTS = Histogram(
     "retrieval_topk_scores",
     "Top-k dense retrieval cosine scores by source.",
@@ -71,7 +66,6 @@ RERANK_TOP_SCORE = Histogram(
     registry=REGISTRY,
 )
 
-# ---- Health --------------------------------------------------------------
 HEALTH_STATUS = Gauge(
     "health_status",
     "1 = up, 0 = down. One series per dependency component.",
@@ -79,7 +73,6 @@ HEALTH_STATUS = Gauge(
     registry=REGISTRY,
 )
 
-# ---- Ingestion -----------------------------------------------------------
 INGEST_DOCUMENTS = Counter(
     "ingest_documents_total",
     "Documents ingested by source type.",
@@ -87,7 +80,6 @@ INGEST_DOCUMENTS = Counter(
     registry=REGISTRY,
 )
 
-# ---- Security ------------------------------------------------------------
 PROMPT_INJECTION = Counter(
     "prompt_injection_total",
     "Detected prompt-injection signals across user input + uploaded docs.",

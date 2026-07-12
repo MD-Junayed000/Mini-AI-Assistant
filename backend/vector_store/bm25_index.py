@@ -41,14 +41,12 @@ class BM25Index:
         self._bm25: BM25Okapi | None = None
         self._loaded = False
 
-    # --- singleton --------------------------------------------------------
     @classmethod
     def instance(cls) -> "BM25Index":
         if cls._instance is None:
             cls._instance = cls()
         return cls._instance
 
-    # --- lifecycle -------------------------------------------------------
     def load(self) -> None:
         if self._loaded:
             return
@@ -70,7 +68,6 @@ class BM25Index:
     def rebuild(cls) -> None:
         inst = cls.instance()
         store = ChromaStore()
-        # Stream everything from Chroma (sync inner call wrapped in to_thread by client).
         ids, docs, metas = inst._stream_from_chroma(store)
         inst._ids = ids
         inst._texts = docs
@@ -105,7 +102,6 @@ class BM25Index:
         metas = list(data.get("metadatas", []) or [])
         return ids, docs, metas
 
-    # --- search ----------------------------------------------------------
     def search(self, query: str, top_k: int = 8) -> list[BM25Hit]:
         if not self._loaded:
             self.load()

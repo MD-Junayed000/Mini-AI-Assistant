@@ -113,7 +113,6 @@ export interface ApiErrorBody {
   detail?: unknown;
 }
 
-/** Thrown for non-2xx responses. `body` carries the parsed JSON when available. */
 export class ApiError extends Error {
   readonly status: number;
   readonly body: ApiErrorBody | null;
@@ -126,7 +125,6 @@ export class ApiError extends Error {
 
 async function parseOrEmpty<T>(p: Promise<Response>): Promise<T> {
   const r = await p;
-  // No content (204) — return empty object cast.
   if (r.status === 204) return {} as T;
   const text = await r.text();
   const contentType = r.headers.get("content-type") ?? "";
@@ -161,8 +159,6 @@ async function fetchWithRetry(
   init: RequestInit,
   retries = 1,
 ): Promise<Response> {
-  // First attempt + one retry; the user can always click again if it
-  // still fails. Keeps the WinError 10054 case from showing as a hard error.
   let lastErr: unknown = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
@@ -175,7 +171,6 @@ async function fetchWithRetry(
 }
 
 function url(path: string): string {
-  // Allow callers to pass either "/sessions" or "sessions" — be permissive.
   const p = path.startsWith("/") ? path : `/${path}`;
   return `${BASE}${p}`;
 }
@@ -262,8 +257,6 @@ export async function sendChat(req: ChatRequest): Promise<ChatResponse> {
 }
 
 export async function ingestFile(file: File): Promise<IngestResponse> {
-  // Build the multipart payload manually so we can keep `fetchWithRetry`
-  // symmetric and don't need FormData-spreading helpers.
   const fd = new FormData();
   fd.append("file", file, file.name);
   return parseOrEmpty<IngestResponse>(

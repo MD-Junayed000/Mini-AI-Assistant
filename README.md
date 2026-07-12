@@ -1,6 +1,6 @@
 # Mini AI Assistant
 
-A production-grade, fully local **RAG + tool-calling assistant** with prompt-injection defense, multi-turn memory, OTLP tracing, Prometheus metrics, and a clean React chat UI. The stack is built end-to-end on free-tier providers — **Ollama Cloud** for chat, **HuggingFace Inference** for embeddings and figure captioning, **ChromaDB** for vector storage, **MongoDB Atlas M0** for durable memory, and **Tempo + Grafana + Prometheus** for traces and metrics.
+A production-grade **RAG + tool-calling assistant** with prompt-injection defense, multi-turn memory, OTLP tracing, Prometheus metrics, and a clean React chat UI. The stack is built end-to-end on free-tier providers — **Ollama Cloud** for chat, **local `sentence-transformers`** for embeddings, **optional HuggingFace Inference** for figure captioning or remote embeddings, **ChromaDB** for vector storage, **MongoDB Atlas M0** for durable memory, and **Tempo + Grafana + Prometheus** for traces and metrics.
 
 ## Stack at a glance
 
@@ -85,12 +85,11 @@ flowchart TB
         S7["7. Gate<br>confidence threshold"]
         S8["8. Build prompt"]
         S9["9. LLM call →<br>memory append"]
-  end
- subgraph External["External services"]
-        OLL[("Ollama Cloud<br>qwen3.5 / gpt-oss")]
-        HF[("HF Inference<br>bge-small, granite-docling")]
-        CH[("ChromaDB<br>on-disk")]
-        MG[("Mongo Atlas M0<br>session history")]
+        Three paths are supported: **bare-metal (local Python venv)**,
+        **Docker (API + UI)**, and **Docker + the observability profile (Tempo +
+        Prometheus + Grafana)**. The single canonical entrypoint is **`uvicorn
+        main:app`** from the repo root (`main.py` lives at the repo root, not under
+        `backend/api/`).
         TP[("Tempo :4318<br>OTLP HTTP")]
   end
     U -- POST /chat --> L
@@ -99,9 +98,10 @@ flowchart TB
     L --> G
     G --> S1
     S1 -- "tool = order_status" --> S3
-    S1 -- "tool = product_search" --> S3
-    S1 -- "tool = other_kb" --> S2
+        | Ollama Cloud key | LLM calls | free tier |
     S2 --> S4
+        | Chroma Cloud credentials or `CHROMA_USE_CLOUD=false` | vector store backend | cloud or local |
+        | HF Inference token (optional) | remote embeddings or HF vision provider | free tier |
     S4 --> CH
     S4 -. miss .- S5
     S5 --> CH & S6
@@ -113,32 +113,33 @@ flowchart TB
 
     style API fill:transparent
     style Clients fill:#e6e6e6
-    style External fill:#e6e6e6
-
+        #   CHROMA_API_KEY / CHROMA_TENANT  required when CHROMA_USE_CLOUD=true
+        #   HF_INFERENCE_API_KEY   optional; only needed for remote embeddings or HF vision
+        #   MONGODB_URI            leave blank for in-proc memory fallback
+        #   CHROMA_USE_CLOUD       set false to use local .chroma/
 ```
-
-
 
 ### Components
 
 | Layer | Path | Responsibility |
 |---|---|---|
-| API | `main.py` + `backend/routes/` | FastAPI app factory with `chat.py`, `health.py`, `metrics.py`, `ingest.py`, `session.py`, and `admin.py` |
-| Pipeline | `backend/pipeline/chat.py` | Implements the nine-stage processing flow shown above |
-| Routing | `backend/tools/router.py` + `backend/tools/registry.py` | Pure-JSON tool-intent classification and tool dispatch |
-| Retrieval | `backend/retrieval/{hybrid,gate}.py` | Hybrid retrieval using Chroma and BM25, followed by an answerability gate |
-| Vector Store | `backend/vector_store/{chroma_store,bm25_index}.py` | On-disk Chroma vector store and pickle-based BM25 index |
+| API | `main.py` + `backend/routes/chat.py` | FastAPI app factory and HTTP routes for chat, ingest, KB admin, sessions, health, and metrics |
+| Pipeline | `backend/pipeline/chat.py` | Implements the nine-step request flow and response sanitization |
+        > The first import of `sentence-transformers` may download the local
+        > `BAAI/bge-small-en-v1.5` model; that is normal.
+| Vector Store | `backend/vector_store/{chroma_store,bm25_index}.py` | Chroma Cloud by default, local persistent fallback, and pickle-based BM25 index |
 | Tools | `backend/tools/{orders,products}.py` | Mocked, file-backed order-status and product-search tools |
-| Memory | `backend/memory.py` | Motor-backed memory with an in-process ring-buffer fallback |
+| Memory | `backend/memory.py` | Mongo-backed session memory with an in-process fallback and session registry |
 | LLM | `backend/llm/{client,prompts}.py` | OpenAI-compatible client with retry and fallback support |
-| Ingestion | `backend/ingestion/{pipeline,docling_pipeline,chunker}.py` | Document-processing pipeline using Docling → RapidOCR → Granite-Docling |
-| Observability | `backend/observability/{logging_config,metrics,tracing,redactor,request_context,health}.py` | Logging, Prometheus metrics, OpenTelemetry tracing, health checks, request context, and PII redaction |
+| Ingestion | `backend/ingestion/{pipeline,docling_pipeline,chunker}.py` | Document ingestion with Docling, RapidOCR, and figure-caption fallback |
+| Observability | `backend/observability/{logging_config,metrics,tracing,redactor,request_context,health}.py` | Logging, metrics, tracing, health checks, request context, and redaction |
 | Security | `backend/security/{injection_guard,rate_limit}.py` | Prompt-injection detection and per-session rate limiting |
 
 ---
-
-
-
+        > `BAAI/bge-small-en-v1.5`, and upserts into ChromaDB. Chroma Cloud is the
+        > default path; set `CHROMA_USE_CLOUD=false` to keep the index in `\.chroma\`.
+        > Re-runs are safe — `Add of existing embedding ID` warnings are the
+        > idempotency guard.
 ## 2. AI Pipeline (end-to-end)
 
 
@@ -195,19 +196,17 @@ flowchart TD
 
 ### Stage-by-stage
 
-1. **Rate-limit guard** — `slowapi` enforces per-session RPM *before* any work runs. Over-limit requests get `429` + `Retry-After`.
-2. **Injection guard** — regex plus entropy scan of the message. Flagged content is dropped and replaced with a neutral echo. `prompt_injection_total` increments whether or not the message is dropped.
-3. **Tool-intent router** — a small pure-JSON classifier picks `order_status | product_search | other_kb`. On parse failure, one retry with `temperature=0.0`; persistent failure defaults to `other_kb` so retrieval runs anyway (graceful degradation, never wrong-tool dispatch).
-4. **Memory load** — last N turns fetched from Mongo, or from the in-process `deque` fallback when `MONGODB_URI` is unset.
-5. **Tool short-circuit** — when `intent` is `order_status` or `product_search`, the structured answer is returned directly to the caller; no LLM call is ever made. This is the cheapest, fastest, and most accurate path.
-6. **Retrieve** — Chroma cosine over `bge-small` embeddings, top-K. On miss, BM25 lexical search takes over.
-7. **Rerank** — local cosine over ChromaDB's bundled `all-MiniLM-L6-v2` ONNX embedder reorders candidates. No HF call, no torch dependency.
-8. **Gate** — confidence threshold; if reranker scores are all below τ, the build step still runs but the model is told to answer only from supplied context, never to fabricate.
-9. **Build prompt** — system + safety tail + memory window + retrieved context + user message.
-10. **LLM call** — primary model first; on `429`/`5xx`, `tenacity` retries three times with exponential backoff, then falls back to the secondary model. Hard failure raises `LLMError`, surfaced as `503`.
-11. **Memory append** — assistant turn is appended; the window truncates to the last 12 turns so prompts stay bounded.
+1. **Inject check** — reject or neutralize messages that trip the prompt-injection guard.
+2. **Store user turn** — append the user message to session memory.
+3. **Load history** — fetch the recent turns for context.
+4. **Detect tool intent** — parse explicit JSON tool calls or classify the turn as `order_status`, `product_search`, or `other_kb`.
+5. **Retrieve** — run dense Chroma search, then BM25 when needed.
+6. **Gate** — decide whether the retrieved context is strong enough to answer.
+7. **LLM** — call the primary model, then the fallback model on retryable failures.
+8. **Post-LLM tool parse** — accept tool intent emitted by the model itself.
+9. **Store assistant turn** — append the reply and return the sanitized answer.
 
-Every stage emits an OTel span and a `request_stage_seconds` Prometheus histogram with the `stage` label, so latency regressions are visible at a glance.
+Each step emits an OTel span and a `request_stage_seconds` histogram.
 
 ---
 
@@ -215,26 +214,23 @@ Every stage emits an OTel span and a `request_stage_seconds` Prometheus histogra
 
 ## 3. Model Choices & Rationale 
 
-This section consolidates the model decisions into a single reference. All names live in `.env` (`LLM_MODEL`, `LLM_FALLBACK_MODEL`, `HF_EMBED_MODEL`, `HF_RERANK_MODEL`, `HF_VISION_MODEL`), so a user can be swapped without touching the codebase.
+This section summarizes the current model and infrastructure choices. The main values live in `.env`, so they can be changed without editing the code.
 
 | Stage | Picked | Common alternatives | Rationale |
 |---|---|---|---|
-| **LLM provider** | Ollama Cloud (OpenAI-compatible) | Self-hosted Ollama, OpenAI, Anthropic | OpenAI SDK drop-in (`openai.AsyncOpenAI` with `base_url`), free tier, swappable model name keeps the same code path. Self-hosted Ollama was rejected because it would force hardcoded IPs/ports into the demo and pull reviewer time into infra setup. |
-| **Chat (primary)** | `gpt-oss:20b` | `qwen3.5:122b-cloud`, `gpt-oss:120b` | 20B-parameter `gpt-oss` is the fastest free-tier answer on Ollama Cloud and still produces clean JSON tool-intent extraction. Larger variants only kick in when the primary errors (see fallback). |
-| **Chat (fallback)** | `gpt-oss:120b` | `qwen3.5:122b-cloud`, Self-hosted Ollama | Same model family, heavier tier (120B) — kicks in only after `tenacity` exhausts 3 retries on the primary. Identical transport; graceful degradation when the primary errors. |
-| **Embeddings** | `BAAI/bge-small-en-v1.5` via **local `sentence-transformers`** (default); optional HF Router backend behind `HF_EMBEDDINGS_REMOTE=true` | ChromaDB bundled ONNX MiniLM, OpenAI `text-embedding-3-small`, raw HF Inference | De-facto MTEB leader for ≤ 100 MB embedders; cosine-normalized so dot-product recall stays sharp. **Local is the default** because the HF router returns 404 for most sentence-transformer checkpoints (including `BAAI/bge-small-en-v1.5`). The HF Router backend stays available as an opt-in for users who already have an HF Inference subscription; the env var `HF_EMBEDDINGS_REMOTE=true` switches `get_embedder()` to it. |
-| **Reranker** | **Local cosine over ChromaDB's bundled ONNX `all-MiniLM-L6-v2`** (via `embedding_functions.DefaultEmbeddingFunction()`) | `bge-reranker-base`, `ms-marco-MiniLM-L-12`, cross-encoder variants | Same 384-d vector space as the dense retriever (ChromaDB), zero HF calls, no torch, no extra dependency. `HF_RERANK_MODEL` is set in `.env` for documentation completeness but **is not consumed by `backend/llm/rerank.py`**|
-| **Vector store** | ChromaDB `PersistentClient` (on-disk) + ChromaDB's bundled ONNX `all-MiniLM-L6-v2` as default embedding | FAISS, Qdrant, Pinecone | Zero-ops, single-file persistence, native cosine support, ships with `pysqlite3-binary` for the `glibc` mismatch bug. Bundled ONNX embedder means there is **zero network round trip on the read path** — Chroma's native embedder is also what the rerank stage piggy-backs on, so the two stages share one model load. |
+| **LLM provider** | Ollama Cloud (OpenAI-compatible) | Self-hosted Ollama, OpenAI, Anthropic | The app uses the OpenAI SDK against an Ollama-compatible endpoint, which keeps the chat client simple and swappable. |
+| **Chat (primary)** | `gpt-oss:20b` | `qwen3.5:122b-cloud`, `gpt-oss:120b` | Primary chat model used for normal turns and tool-aware responses. |
+| **Chat (fallback)** | `gpt-oss:120b` | `qwen3.5:122b-cloud`, Self-hosted Ollama | Used after retryable primary-model failures. |
+| **Embeddings** | `BAAI/bge-small-en-v1.5` via local `sentence-transformers` by default | HF router embeddings, OpenAI embeddings | Default retrieval path is local; set `HF_EMBEDDINGS_REMOTE=true` to use the HF router. |
+| **Reranker** | Local cosine over ChromaDB's bundled ONNX `all-MiniLM-L6-v2` | Cross-encoders, remote rerankers | Keeps reranking local and dependency-light. |
+| **Vector store** | ChromaDB Cloud by default, local `PersistentClient` for tests/fallbacks | FAISS, Qdrant, Pinecone | The code supports both cloud and local persistent storage; Chroma Cloud is the default deployment path. |
 | **BM25** | `rank_bm25` with pickle cache | Elasticsearch, OpenSearch | A 50-document FAQ is too small for an Elastic cluster; the cache keeps BM25 fully local and reproducible. |
-| **Memory** | MongoDB Atlas M0 + in-process `deque` fallback | Redis, SQLite | Atlas M0 is genuinely free; the `deque` fallback lets demos run with zero secrets, and `slowapi` keys off `session_id`, not IP. When `MONGODB_URI` is empty/unreachable the app logs `mongo_unavailable_using_memory_fallback` and chats still complete. |
-| **PDF parser** | Docling → pdfplumber (graceful) → RapidOCR → Granite-Docling (figures) | `pypdf`, `unstructured`, pure VLM | Three stages: Docling first for highest-quality structured output, **pdfplumber** as the silent fallback when Docling's transitive `torch` dep hits `WinError 1114` on Windows, RapidOCR only when a page yields < 50 chars (scan detection), Granite-Docling VLM only for figures. Cheaper than `pypdf` for scans, cheaper than full VLM for readable PDFs. The Docling import is probed **in an isolated subprocess** so a native crash can never take down the FastAPI worker. |
-| **Vision (figures)** | `ibm-granite/granite-docling-258M` (HF Inference, opt-in) | LLaVA, Florence-2 | Tuned for figure captioning; small; runs in HF Inference free tier. Invoked only when Docling is available and the page actually contains a `Figure` node — never on plain text. |
-| **OCR** | `rapidocr-onnxruntime` | Tesseract | On-device, no rate limits; covers PDFs Docling cannot read; lighter and more accurate on Asian text. |
-| **Framework** | FastAPI 0.115 | Flask, Django, LitServe | Async-native (a 30 s LLM call does not block anyone else); Pydantic v2 gives runtime schema validation; `/healthz` + `/metrics` ship in one deployment. |
-| **Container** | Multi-stage Docker on `python:3.11-slim`, non-root, `tini` | Single-stage, distroless | Slimmer image, no surprise OOM kills|
-| **UI** | Vite + React + TypeScript | Streamlit, Gradio | Fast, statically deployable, themed after Claude/Anthropic editorial. Backend is API-only — the SPA is served from the same image at `/app/`. |
-| **Injection defense** | Regex + entropy detector + system prompt tail | `prompt-guard`, Lakera | Defense in depth; one method alone is bypassable. Detector first, prompt hardening last. |
-| **Observability** | structlog + Prometheus + OTLP HTTP | Loki, ELK | No aggregator to operate; structlog writes one JSON line per event (pipe to `jq`); Prometheus gives free metrics; OTLP pushes spans to local Tempo via the bundled Docker stack. |
+| **Memory** | MongoDB Atlas M0 + in-process fallback + session registry | Redis, SQLite | Session history is durable when Mongo is available and still works locally when it is not. |
+| **Framework** | FastAPI 0.115 | Flask, Django, LitServe | Async API with built-in validation and health endpoints. |
+| **Container** | Multi-stage Docker on `python:3.11-slim`, non-root, `tini` | Single-stage, distroless | Builds the SPA and backend into one image. |
+| **UI** | Vite + React + TypeScript | Streamlit, Gradio | Frontend SPA served from the same image at `/app/`. |
+| **Injection defense** | Regex + entropy detector + system prompt tail | `prompt-guard`, Lakera | Layered prompt-injection protection. |
+| **Observability** | structlog + Prometheus + OTLP HTTP | Loki, ELK | Built-in logs, metrics, and optional traces. |
 
 > Anything in this table can be swapped by editing `backend/config.py`,
 > `backend/llm/client.py`, `backend/llm/embeddings.py`, or `.env`. The rest
@@ -253,9 +249,10 @@ This section consolidates the model decisions into a single reference. All names
    (scan detection).
 3. **Granite-Docling VLM** — captions figures, only for pages that have them.
 
-Each resulting chunk is embedded with `bge-small` and upserted into ChromaDB
-under a stable `chunk_id = sha1(source::page::offset)`, so re-uploads are
-idempotent. BM25 is rebuilt on every upsert with a pickle-cache invalidation.
+Each resulting chunk is embedded with `BAAI/bge-small-en-v1.5` and upserted
+into ChromaDB under a stable `chunk_id = sha1(source::page::offset)`, so
+re-uploads are idempotent. BM25 is rebuilt on every upsert with a
+pickle-cache invalidation.
 
 ### 4.2 Retrieval approach
 
@@ -282,113 +279,38 @@ a tool; otherwise they are short-circuited and returned directly.
 
 ### 4.5 Prompt design
 
-The chat pipeline does **not** use a single labeled prompt template — it
-builds the OpenAI-style `messages` array directly in
-`backend/llm/client.py` and embeds a structured system prompt from
-`backend/llm/prompts.py`. The shape is:
+`backend/llm/client.py` builds the OpenAI-style `messages` array, and
+`backend/llm/prompts.py` provides the structured system prompt. The prompt
+has three parts: identity and mode selection, tool/KB rules for domain
+queries, and coreference handling for short follow-ups.
 
-```python
-messages = [
-    {"role": "system", "content": BASE_SYSTEM_PROMPT},                      # 1
-    {"role": "system", "content": "Retrieved context:\n\n[doc-1] …\n[doc-2] …"},  # 2 (optional)
-    # For every prior turn (interleaved user / assistant):
-    {"role": "user",      "content": "…"},
-    {"role": "assistant", "content": "…"},
-    {"role": "user",      "content": "<current message>"},                   # last
-]
-```
-
-**1. `BASE_SYSTEM_PROMPT`** (`backend/llm/prompts.py`) has two explicit
-modes so the model knows when to answer from its own knowledge vs. when
-to lean on tools and the KB:
-
-* **GENERAL CHAT (default).** Greetings, general-knowledge questions,
-  anything outside the company's domain — answer naturally, no citation,
-  no refusal. The system prompt explicitly enumerates the friendly
-  examples ("hello" → "Hi! How can I help?", "what's the weather?" →
-  short general answer + caveat about live data, "tell me a joke" → tell
-  a clean joke, "thanks!" → "You're welcome!").
-* **DOMAIN MODE.** When the message mentions an order id, product, or the
-  knowledge base — prefer, in order: (a) **TOOLS**, whose schema is
-  rendered live into the prompt as JSON via `tool_schema_json()`
-  (`order_status` with `{"order_id": "…"}` and `product_search` with
-  `{"query": "…", "top_k": 5}`), then (b) the **KB context** delivered as
-  the `[doc-i]` system block. Tool calls must be emitted as **exactly
-  one JSON object on its own line** — the pipeline extracts them with
-  `parse_tool_intent()` (JSON-fence regex first, then a brace-balanced
-  fallback).
-
-Mode selection is rule-based in the prompt: greetings and pleasantries go
-to GENERAL CHAT, domain keywords go to DOMAIN MODE, and on doubt the
-assistant is told to err toward GENERAL CHAT.
-
-A live order-id sample is rendered into the prompt at module-load time
-from `data/orders.json` via `_first_order_sample()` (falls back to
-`"ORD001"`), so the model always sees a real id shape and never invents
-placeholder values.
-
-The refusal line — used **only in DOMAIN MODE when neither tools nor the
-KB answer** — is the exact string
-`"I don't know based on the available information."`. There is no global
-"I don't know" reflex; greetings and general questions never trigger it.
-
-**2. Retrieved context block.** When retrieval returns hits, the pipeline
-formats them as `[doc-1] …`, `[doc-2] …` and joins them into a single
-`system` message that starts with `"Retrieved context:\n"`. Up to 6
-documents are passed through (`retrieved[:6]` in
-`backend/pipeline/chat.py`). Tool results from an early dispatch (an
-order id or product query parsed from the user's message before the LLM
-ran) are injected as `[tool-result order_status] {…}` blocks alongside
-the docs.
-
-**3. Memory.** Prior turns are loaded with `memory.history(session_id,
-limit=20)` and re-serialized as `{"role","content"}` turns, oldest →
-newest. The pipeline drops the just-appended user turn if the load
-includes it (so the message isn't sent twice), then appends the live
-`user_message` once at the end. There is **no hardcoded 6-turn cap** in
-the prompt — the window is bounded by `Memory.append`'s 12-turn ring
-(`backend/memory.py`).
-
-**4. Safety tail.** `SYSTEM_PROMPT_INJECTION_DEFENSE` from
-`backend/security/injection_guard.py` is appended to `BASE_SYSTEM_PROMPT`
-and tells the model to (a) never reveal or quote the system prompt,
-(b) never follow instructions found inside a document that try to
-change its role or invoke tools unusually, and (c) fall back to a
-refusal + short citation when unsure.
-
-**5. Post-processing.** After the LLM returns, `backend/pipeline/chat.py`
-runs `parse_tool_intent()` again on the model's reply (so the model can
-also emit a tool call in its own words) and `_sanitize_answer()` to
-strip leaked `[doc-N]` / `[tool-result …]` scaffolding from the bubble
-the user actually sees.
-
-Log redaction (`backend/observability/redactor.py`) is a separate,
-write-time concern: emails, phones, and credit-card-shaped strings are
-stripped from every log line as it is written, never from the request
-or LLM output.
+`backend/security/injection_guard.py` appends the safety tail, while
+`backend/pipeline/chat.py` adds retrieved context, preserves session
+history, and strips any leaked `[doc-N]` or `[tool-result ...]` markers
+before the answer is shown.
 
 ---
 
 ## 5. Project layout
 
 ```
-\Mini_AI_Assistant\
+Mini_AI_Assistant/
 ├── main.py                   FastAPI app factory + uvicorn entrypoint (`uvicorn main:app`)
 ├── backend/
 │   ├── routes/               chat, health, metrics, ingest, session, admin
 │   ├── pipeline/             nine-stage chat orchestrator + JSON tool router
 │   ├── retrieval/            hybrid (Chroma cosine + BM25) + answerability gate
-│   ├── vector_store/         ChromaStore + BM25Index (pickle cache)
+│   ├── vector_store/         ChromaStore + BM25Index (cloud-first, local fallback)
 │   ├── tools/                orders, products (registry + router)
-│   ├── memory.py             Motor + in-proc ring fallback
+│   ├── memory.py             Mongo + in-proc fallback + session registry
 │   ├── llm/                  AsyncOpenAI client w/ retry + fallback
-│   ├── ingestion/            Docling → RapidOCR → Granite-Docling pipeline
+│   ├── ingestion/            Docling → RapidOCR → vision captioning pipeline
 │   ├── observability/        logging, metrics, tracing, redactor, request_context, health
 │   ├── security/             injection_guard + rate_limit
 │   └── config.py             Pydantic-settings source of truth
-├── frontend/                 Vite + React 18 + TypeScript SPA (themed after Claude/Anthropic)
+├── frontend/                 Vite + React 18 + TypeScript SPA
 │   ├── src/
-│   │   ├── api/              typed client for all 13 backend endpoints
+│   │   ├── api/              typed client for backend endpoints
 │   │   └── components/       Sidebar, MessageBubble, Composer, StatusPill
 │   ├── public/favicon.png    brand mark
 │   └── .env.example          VITE_API_BASE
@@ -397,15 +319,14 @@ or LLM output.
 │   ├── products.json         mock product tool data
 │   ├── notes.txt             seed KB
 │   └── uploads/              files dropped here are picked up by ingestion
-├── docs/                     decisions.md, runbook.md
 ├── ops/
 │   ├── tempo.yaml            local Tempo config (OTLP HTTP)
 │   ├── prometheus.yml        scrape config
 │   ├── alerts.yaml           sample alert rules
 │   └── grafana/              provisioning + dashboards/
-├── tests/                    13 test files, ~80 tests, pytest -q
+├── tests/                    pytest suite
 ├── logs/                     rotating JSON logs (5 × 50 MB)
-├── .chroma/                  vector store on-disk
+├── .chroma/                  local fallback vector store when CHROMA_USE_CLOUD=false
 ├── docker-compose.yml        api + frontend (+ obs profile: tempo, prometheus, grafana)
 ├── Dockerfile                multi-stage, non-root, tini
 ├── requirements.txt
@@ -455,8 +376,8 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-> The first import of `chromadb` may download its bundled ONNX embedder
-> (~80 MB); that is normal.
+> The first import of `sentence-transformers` may download the local
+> `BAAI/bge-small-en-v1.5` model; that is normal.
 
 ### 6.3 Seed the vector store (one-time, idempotent)
 
@@ -466,9 +387,10 @@ python -m backend.ingestion.pipeline
 ```
 
 > Walks `data/` for `*.pdf`, `*.txt`, `*.md`, chunks them, embeds them with
-> `BAAI/bge-small-en-v1.5`, and upserts into ChromaDB at `.\.chroma\`. Re-runs
-> are safe — `Add of existing embedding ID` warnings are the idempotency
-> guard.
+> `BAAI/bge-small-en-v1.5`, and upserts into ChromaDB. Chroma Cloud is the
+> default path; set `CHROMA_USE_CLOUD=false` to keep the index in `\.chroma\`.
+> Re-runs are safe — `Add of existing embedding ID` warnings are the
+> idempotency guard.
 
 ### 6.4 Start the API (Terminal 1 — keep running)
 
@@ -567,15 +489,15 @@ pytest -q              # all tests (~80)
 pytest -q -m "not network"   # offline subset (CI-friendly)
 ```
 
-### 6.9 Docker — single image, one port
+## Docker Installation 
 
-The multi-stage `Dockerfile` builds the React SPA, then layers it on top
-of the FastAPI image so the container serves both UI and API on
-`:8000`. One `docker compose up` gets you a working system:
+The multi-stage `Dockerfile` builds the React SPA and FastAPI app into one
+image. `docker compose up -d --build` starts the API and UI on `:8000`:
 
 ```powershell
 Copy-Item .env.example .env -Force
-# Fill OLLAMA_CLOUD_API_KEY and HF_INFERENCE_API_KEY in .env
+# Fill OLLAMA_CLOUD_API_KEY and either Chroma Cloud credentials or CHROMA_USE_CLOUD=false
+# Add HF_INFERENCE_API_KEY only if you opt into remote embeddings or HF vision
 
 docker compose up -d --build
 docker compose logs -f app
@@ -583,7 +505,7 @@ start http://localhost:8000/app      # SPA UI
 start http://localhost:8000/healthz  # API health
 ```
 
-### 6.10 Docker + observability stack (Tempo, Prometheus, Grafana)
+### 6.9 Docker + observability stack (Tempo, Prometheus, Grafana)
 
 ```powershell
 Get-Content .env.obs | Add-Content .env     # if .env.obs exists in the clone
@@ -611,18 +533,25 @@ the highlights below mirror the names in `backend/config.py`.
 | LLM | `OLLAMA_FALLBACK_MODEL` | `gpt-oss:120b` | yes | Used on retry exhaustion |
 | LLM | `OLLAMA_TIMEOUT_SECONDS` | `30` | no | Per-call timeout |
 | Embeddings | `HF_INFERENCE_BASE_URL` | `https://router.huggingface.co/v1` | yes | HF router base |
-| Embeddings | `HF_INFERENCE_API_KEY` | `<key>` | **yes** | Free tier — `https://huggingface.co/settings/tokens` |
-| Embeddings | `HF_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | yes | Dense retriever |
+| Embeddings | `HF_INFERENCE_API_KEY` | `<key>` | no | Required only for remote embeddings or HF vision |
+| Embeddings | `HF_EMBEDDING_MODEL` | `BAAI/bge-small-en-v1.5` | yes | Dense retriever; local by default |
+| Embeddings | `HF_EMBEDDINGS_REMOTE` | `false` | no | Set true to use the HF router for embeddings |
 | Embeddings | `HF_RERANK_MODEL` | `BAAI/bge-reranker-base` | no | Not used: reranker is local |
-| Vision | `HF_VISION_MODEL` | `ibm-granite/granite-docling-258M` | yes | Figure captioning only |
-| Vector store | `CHROMA_PERSIST_DIR` | `./.chroma` | yes | On-disk persistence |
+| Vision | `VISION_PROVIDER` | `ollama` | no | `ollama` by default; set `hf` to use HF vision |
+| Vision | `OLLAMA_VISION_MODEL` | `gemma4:31b-cloud` | no | Default vision model |
+| Vision | `HF_VISION_MODEL` | `google/gemma-3-27b-it` | no | Used only when `VISION_PROVIDER=hf` |
+| Vector store | `CHROMA_USE_CLOUD` | `true` | yes | Cloud by default; set `false` for local persistence |
+| Vector store | `CHROMA_HOST` | `api.trychroma.com` | no | Cloud host |
+| Vector store | `CHROMA_API_KEY` | `<key>` | yes | Required when `CHROMA_USE_CLOUD=true` |
+| Vector store | `CHROMA_TENANT` | `<tenant>` | yes | Required when `CHROMA_USE_CLOUD=true` |
+| Vector store | `CHROMA_DATABASE` | `mini_ai` | no | Cloud database name |
 | Vector store | `CHROMA_COLLECTION` | `mini_ai_kb` | yes | Collection name |
+| Vector store | `CHROMA_PERSIST_DIR` | `./.chroma` | no | Local-only fallback directory |
 | Vector store | `BM25_CACHE_PATH` | `./.chroma/bm25.pkl` | yes | Pickle cache |
-| Memory | `MONGODB_URI` | (blank) | no | Leave blank for in-proc memory |
+| Memory | `MONGODB_URI` | (blank) | no | Leave blank for in-proc memory fallback |
 | Memory | `MONGODB_DB` | `mini_ai` | no | DB name |
 | Memory | `MONGODB_COLLECTION` | `messages` | no | Collection name |
 | Runtime | `RATE_LIMIT_PER_MIN` | `30` | no | Per session |
-| Tracing | `OTEL_ENABLED` | `true` | no | Master switch |
 | Tracing | `OTEL_SERVICE_NAME` | `mini-ai-assistant` | no | Service name in spans |
 | Tracing | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://tempo:4318` | no | Leave blank to disable traces |
 | Tracing | `OTEL_EXPORTER_OTLP_HEADERS` | (blank) | no | Only if backend needs auth |
@@ -630,15 +559,16 @@ the highlights below mirror the names in `backend/config.py`.
 **How to set the values:**
 
 1. Copy the template: `Copy-Item .env.example .env -Force`.
-2. Edit `.env` and fill the two required keys (`OLLAMA_CLOUD_API_KEY`,
-   `HF_INFERENCE_API_KEY`); everything else can stay at defaults for a
-   local bare-metal run.
-3. Restart `uvicorn` after any change — settings are read at process start.
+2. Edit `.env` and fill `OLLAMA_CLOUD_API_KEY`, plus either Chroma Cloud
+   credentials or `CHROMA_USE_CLOUD=false` for local storage.
+3. Add `HF_INFERENCE_API_KEY` only if you opt into remote embeddings or
+   HF vision.
+4. Restart `uvicorn` after any change — settings are read at process start.
 
 **What each key does at runtime:**
 
-- The two API keys unlock the LLM and embedding calls. Without them,
-  `/chat` returns `503 ERR_LLM_DOWN` (or `503 ERR_EMBEDDINGS_DOWN`).
+- `OLLAMA_CLOUD_API_KEY` unlocks chat. `HF_INFERENCE_API_KEY` is only
+  needed if you opt into remote embeddings or HF vision.
 - `MONGODB_URI` blank → in-process memory; set → durable across restarts.
 - `OTEL_EXPORTER_OTLP_ENDPOINT` blank → tracing becomes a true no-op
   (zero network, zero cost).
@@ -832,17 +762,21 @@ Response (cached 10 s):
 
 ### 10.2 `/metrics` (Prometheus)
 
+Scrapes the live counters and histograms used by the app.
+
 ```powershell
 (Invoke-WebRequest http://127.0.0.1:8000/metrics -UseBasicParsing).Content
 ```
 
-Exposes the standard families (`http_requests_total`, `request_stage_seconds`,
+The main families are `http_requests_total`, `request_stage_seconds`,
 `answerability_decisions_total`, `tool_calls_total`, `tool_call_seconds`,
 `retrieval_topk_scores`, `rerank_top_score`, `health_status`,
-`ingest_documents_total`, `prompt_injection_total`,
-`rate_limit_hits_total`) — no `mini_` prefix, names from a live run.
+`ingest_documents_total`, `prompt_injection_total`, and
+`rate_limit_hits_total`.
 
 ### 10.3 Sample chat invocations
+
+Use these to verify the three common paths:
 
 ```powershell
 # Order status (tool short-circuits, no LLM call)
@@ -866,18 +800,23 @@ Exposes the standard families (`http_requests_total`, `request_stage_seconds`,
 
 ### 10.4 Pytest
 
+Run the full suite or the offline subset, depending on what is available.
+
 ```powershell
 pytest -q                    # all tests (~80)
 pytest -q -m "not network"   # offline subset (CI-friendly)
 ```
 
-The offline suite covers JSON tool routing, memory append/load,
-redaction, gate threshold, prompt assembly — the **deterministic** parts
-of the pipeline. The online suite additionally pings the LLM and HF.
+The offline suite covers routing, memory, redaction, gating, and prompt
+assembly. The online suite additionally exercises the LLM and HF paths.
 
 ---
 
 ## 11. Monitoring
+
+Logs, metrics, traces, and health checks are available without extra
+infrastructure. The Docker profile just adds Tempo, Prometheus, and Grafana
+for visualization.
 
 ### 11.1 The four windows
 
@@ -885,7 +824,7 @@ of the pipeline. The online suite additionally pings the LLM and HF.
 |---|---|---|---|
 | **Logs** | `./logs/app.log` (bare-metal) or `/app/logs/app.log` (container) | PII-free JSON per event; `event=chat_completed`, `otel_export_failed`, `injection_flagged`, etc. One `jq -c '.event'` line summarizes what's happening. | **Yes** — always on |
 | **Metrics** | `http://127.0.0.1:8000/metrics` (Prometheus format) | Counters + histograms: `http_requests_total`, `request_stage_seconds`, `answerability_decisions_total`, `tool_calls_total`, `retrieval_topk_scores`, `prompt_injection_total`, `health_status`. Enough to alert on. | **Yes** — always on, zero setup |
-| **Traces** | Grafana → Explore → Tempo, or hosted backend (see §11.5) | Every chat is a tree: `chat.request → chat.retrieve_rerank → chat.llm → chat.memory_append_assistant`. Spans carry `session.id`, `llm.model`, `gate.score`. | Optional — only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set |
+| **Traces** | Grafana → Explore → Tempo, or hosted backend (see §11.5) | Every chat becomes a span tree with `session.id`, `llm.model`, and `gate.score`. | Optional — only when `OTEL_EXPORTER_OTLP_ENDPOINT` is set |
 | **Health** | `http://127.0.0.1:8000/healthz` | Component status with 10 s caching; cheap to monitor. | **Yes** — always on |
 
 ### 11.2 Built-in metrics — verify locally without any extra services
@@ -905,8 +844,8 @@ Invoke-RestMethod http://127.0.0.1:8000/healthz | Format-List
 ```
 
 When counters like `http_requests_total{path="/chat",status="200"} 7`
-climbing as requests arrive, the app is fully instrumented. **No Prometheus server,
-no Grafana, no Docker required** — `prometheus_client` exposes this directly.
+increase as requests arrive, instrumentation is working. No Prometheus server,
+Grafana, or Docker is required to read `/metrics`.
 
 ### 11.3 Grafana dashboards (full stack)
 
@@ -962,8 +901,8 @@ OTEL_EXPORTER_OTLP_ENDPOINT=https://otlp-gateway-prod-us-east-0.grafana.net/otlp
 OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic%20<base64-instance:apitoken>
 ```
 
-Traces are **disabled by default** — leave `OTEL_EXPORTER_OTLP_ENDPOINT`
-empty and the OTel SDK becomes a true no-op (zero network, zero cost).
+Traces are disabled by default. Leave `OTEL_EXPORTER_OTLP_ENDPOINT` empty
+and the OTel SDK becomes a no-op.
 
 ### 11.6 Why a structlog + OTLP combo?
 
@@ -1009,6 +948,8 @@ by HTTP status.
 
 ## 13. Verifying the vector store
 
+Use these checks to confirm the Chroma collection and BM25 cache are healthy.
+
 ### 13.1 Component probe via `/healthz`
 
 ```powershell
@@ -1016,8 +957,8 @@ Invoke-RestMethod http://127.0.0.1:8000/healthz | Format-List
 # overall: up ; components: { chroma: up, ollama: up, mongo: up }
 ```
 
-`chroma: up` confirms the API can reach the on-disk store and the
-embedding function is loaded.
+`chroma: up` means the API can reach the store and load the embedding
+function.
 
 ### 13.2 Count chunks in the collection
 
@@ -1034,8 +975,8 @@ asyncio.run(main())
 # Expected: chunks: 10   (the 10 chunks produced from data/notes.txt)
 ```
 
-If `count == 0` after seeding, the on-disk path is wrong (check
-`CHROMA_PERSIST_DIR` in `.env` and `.chroma/` permissions).
+If `count == 0` after seeding, check `CHROMA_PERSIST_DIR` and local
+permissions.
 
 ### 13.3 Functional smoke (no LLM required)
 
@@ -1054,9 +995,8 @@ asyncio.run(main())
 ```
 
 Expected: the top hit should be the return-policy chunk from
-`data/notes.txt` with a cosine score in the 0.1—0.3 range (the
-`BAAI/bge-small-en-v1.5` embedder gives modest scores on this tiny
-corpus — that's normal).
+`data/notes.txt` with a modest cosine score. Low scores are normal on this
+small corpus.
 
 ### 13.4 Idempotency check
 
@@ -1068,8 +1008,8 @@ python -m backend.ingestion.pipeline   # first time → 10 chunks
 python -m backend.ingestion.pipeline   # second time → still 10 chunks
 ```
 
-The logs will show `Add of existing embedding ID: notes::chunk::N` for
-each re-insert. That is the idempotency guard at work, not a bug.
+Re-running ingestion should keep the chunk count unchanged. Repeated ID
+warnings are expected.
 
 ### 13.5 Inspect the disk
 
@@ -1081,8 +1021,7 @@ each re-insert. That is the idempotency guard at work, not a bug.
     └── data_level0.bin     # HNSW vector index
 ```
 
-If `data_level0.bin` is non-empty after the ingestion run, Chroma is
-healthy.
+If `data_level0.bin` exists after ingestion, Chroma is healthy.
 
 ---
 
@@ -1102,7 +1041,7 @@ working.
 | 7 | `(Invoke-WebRequest http://127.0.0.1:8000/metrics -UseBasicParsing).Content` | non-zero `http_requests_total{path="/chat"}`; non-zero `tool_calls_total`; non-zero `request_stage_seconds_count` |
 | 8 | Open Grafana → Explore → Tempo → search by `session.id` (only if `OTEL_EXPORTER_OTLP_ENDPOINT` is set) | tree with one root span + 9 child spans (`chat.request → tool_intent → retrieve_rerank → gate → build_prompt → llm → memory_append`) |
 | 9 | Loop: `for ($i=0; $i -lt 200; $i++) { Invoke-WebRequest http://127.0.0.1:8000/chat -Method POST -Body '{"session_id":"rl","message":"hi"}' ... }` | counter `rate_limit_hits_total` rises past zero |
-| 10 | `Invoke-RestMethod http://127.0.0.1:8000/session/<sid>/reset -Method DELETE` | 200; subsequent chat for `<sid>` is a fresh turn |
+| 10 | `Invoke-RestMethod http://127.0.0.1:8000/session/<sid>/reset -Method POST` | 200; subsequent chat for `<sid>` is a fresh turn |
 
 If any row reads **not expected**, the failure-mode table in §12 pinpoints
 the relevant component.

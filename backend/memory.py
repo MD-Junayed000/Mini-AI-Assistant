@@ -53,8 +53,6 @@ class Memory:
         self._meta_collection: Any = None
         self._fallback: dict[str, list[dict[str, Any]]] = {}
         self._session_fallback: dict[str, dict[str, Any]] = {}
-        # In-proc metadata cache so a Mongo cold-start still serves the
-        # current rename in the few seconds before _ensure() resolves.
         self._meta_fallback: dict[str, dict[str, Any]] = {}
         self._init_lock = asyncio.Lock()
         self._healthy = False
@@ -69,7 +67,6 @@ class Memory:
                 from motor.motor_asyncio import AsyncIOMotorClient
 
                 self._client = AsyncIOMotorClient(self._uri, serverSelectionTimeoutMS=2000)
-                # Ping
                 await self._client.admin.command("ping")
                 self._collection = self._client[self._db][self._coll]
                 self._session_collection = self._client[self._db][self._session_coll_name]
@@ -128,7 +125,6 @@ class Memory:
             except Exception as e:  # noqa: BLE001
                 log.warning("mongo_write_failed_falling_back", error=str(e))
                 self._healthy = False
-        # In-memory fallback.
         doc = m.to_doc()
         self._fallback.setdefault(m.session_id, []).append(doc)
         self._touch_fallback_session(m.session_id, ts=doc["ts"])
@@ -176,8 +172,6 @@ class Memory:
         v = (title or "").strip()
         if not v or not session_id:
             return
-        # Always update the in-proc cache first so the next read sees the
-        # new title regardless of Mongo state.
         self._meta_fallback[session_id] = {
             "session_id": session_id,
             "title": v,
@@ -241,7 +235,6 @@ class Memory:
                         return doc["title"]
                 doc = await self._meta_collection.find_one({"session_id": session_id})
                 if doc and doc.get("title"):
-                    # Backfill the cache so subsequent reads are fast.
                     self._meta_fallback[session_id] = {
                         "session_id": session_id,
                         "title": doc["title"],

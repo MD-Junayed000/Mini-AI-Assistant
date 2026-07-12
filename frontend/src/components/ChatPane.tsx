@@ -16,7 +16,6 @@ import { MessageBubble } from "./MessageBubble";
 import { StatusPill } from "./StatusPill";
 
 export interface ChatPaneHandle {
-  /** Send a prompt as if the user typed it into the composer. */
   sendPrompt: (text: string) => void;
 }
 
@@ -64,9 +63,6 @@ export const ChatPane = forwardRef<ChatPaneHandle, Props>(function ChatPane(
       setLoadingSession(false);
       return;
     }
-    // Reset state synchronously so the previous chat's messages don't
-    // briefly flash while the new fetch is in flight. Loading state shows
-    // a spinner instead of the empty hero.
     setMessages([]);
     setError(null);
     setLoadingSession(true);
@@ -76,9 +72,6 @@ export const ChatPane = forwardRef<ChatPaneHandle, Props>(function ChatPane(
         const r = await getSessionMessages(sessionId);
         if (!cancelled) setMessages(r.messages ?? []);
       } catch (e: any) {
-        // Surface this so a broken session fetch is visible instead of a
-        // silent empty-state hero. The previous silent fallback made
-        // sessions look "vanishing".
         if (!cancelled) {
           setMessages([]);
           setError(
@@ -98,11 +91,8 @@ export const ChatPane = forwardRef<ChatPaneHandle, Props>(function ChatPane(
     };
   }, [sessionId]);
 
-  // Focus the composer whenever a new session is opened so the user can
-  // type immediately without clicking the textarea first.
   useEffect(() => {
     if (sessionId && !busy && !loadingSession) {
-      // Defer so the layout has settled.
       window.setTimeout(() => textareaRef.current?.focus(), 50);
     }
   }, [sessionId, busy, loadingSession]);
@@ -132,9 +122,6 @@ export const ChatPane = forwardRef<ChatPaneHandle, Props>(function ChatPane(
     const t0 = performance.now();
     const nowTs = Date.now() / 1000;
     const userMsg: Message = { role: "user", content: text, ts: nowTs };
-    // Insert a placeholder assistant message with a spinner so the user sees
-    // that the request is in flight (and how long it's been). The pending
-    // timer is updated via a setInterval cleared on response/error.
     const placeholder: Message = {
       role: "assistant",
       content: "",

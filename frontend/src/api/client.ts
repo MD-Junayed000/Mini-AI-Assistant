@@ -2,8 +2,10 @@
  * Typed HTTP client for the Mini AI Assistant backend.
  *
  * Mirrors every endpoint declared in `backend/routes/chat.py`. The base URL
- * is read from `import.meta.env.VITE_API_BASE` (falling back to "/api", which
- * the Vite dev proxy forwards to `http://localhost:8000`).
+ * is read from `import.meta.env.VITE_API_BASE`:
+ *
+ *   - dev (vite dev server)   → "/api" (the Vite proxy forwards to :8000)
+ *   - single-image production → "" (same origin as the FastAPI host)
  *
  * The previous Streamlit implementation used `httpx` on the server side; the
  * React app is a pure browser app, so we use `fetch`. Single retry on
@@ -11,11 +13,8 @@
  * drops from looking like an app fault.
  */
 
-// `VITE_API_BASE` is read from the build-time .env (see `env.d.ts`).
-// Default to "/api" so the Vite proxy handles local dev; production builds
-// set VITE_API_BASE to the deployed backend origin.
 const BASE: string =
-  ((import.meta.env.VITE_API_BASE ?? "/api") as string).replace(/\/+$/, "");
+  ((import.meta.env.VITE_API_BASE ?? "") as string).replace(/\/+$/, "");
 
 export interface Source {
   id: string;

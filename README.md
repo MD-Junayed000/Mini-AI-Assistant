@@ -5,11 +5,11 @@ A production-grade, fully local **RAG + tool-calling assistant** with prompt-inj
 ## Stack at a glance
 
 > FastAPI 0.115 · Pydantic 2.9 · `httpx` + `tenacity` · ChromaDB ≥ 1.1 · `rank-bm25`
->
+
 > · `sentence-transformers` · OpenAI-compatible client for Ollama Cloud ·
->
+
 > `motor` (async MongoDB) · **Vite + React 18 + TypeScript** · `structlog` · OpenTelemetry SDK ·
->
+
 > `prometheus-client` · multi-stage Docker image · non-root runtime · `tini` init.
 
 
@@ -23,6 +23,7 @@ A production-grade, fully local **RAG + tool-calling assistant** with prompt-inj
 - **Hybrid retrieval** — Chroma cosine + BM25, reranked with a local cosine over ChromaDB's bundled `all-MiniLM-L6-v2` ONNX model.
 - **Defense in depth** — regex + entropy injection detector plus a hardened system prompt tail; per-session `slowapi` limiter.
 - **Observability by default** — `/healthz` + `/metrics` always on; OTLP traces opt in via one env var.
+- **Single-image deploy** — multi-stage Dockerfile builds the React SPA and the FastAPI backend into one container; one command, one port.
 - **Zero-cost demo path** — works without MongoDB (in-process memory fallback) and without the Docker obs stack (browser can hit `/metrics` directly).
 
 ---
@@ -59,7 +60,7 @@ A production-grade, fully local **RAG + tool-calling assistant** with prompt-inj
 
 
 
-The system is split into three concerns: **client layer**, **a single-process API** and **a set of external services**. Each request flows through the same ine-stage pipeline, with every stage emitting an OpenTelemetry span and a Prometheus timer.
+The system is split into three concerns: **client layer**, **a single-process API** and **a set of external services**. Each request flows through the same nine-stage pipeline, with every stage emitting an OpenTelemetry span and a Prometheus timer.
 
 
 
@@ -212,9 +213,9 @@ Every stage emits an OTel span and a `request_stage_seconds` Prometheus histogra
 
 
 
-## 3. Model Choices & Rationale (basics + alternatives)
+## 3. Model Choices & Rationale 
 
-This section consolidates the model decisions into a single reference: **what was picked**, **what it replaces**, and **why the alternatives were rejected**. All names live in `.env` (`LLM_MODEL`, `LLM_FALLBACK_MODEL`, `HF_EMBED_MODEL`, `HF_RERANK_MODEL`, `HF_VISION_MODEL`), so a user can be swapped without touching Python.
+This section consolidates the model decisions into a single reference. All names live in `.env` (`LLM_MODEL`, `LLM_FALLBACK_MODEL`, `HF_EMBED_MODEL`, `HF_RERANK_MODEL`, `HF_VISION_MODEL`), so a user can be swapped without touching the codebase.
 
 | Stage | Picked | Common alternatives | Rationale |
 |---|---|---|---|
@@ -222,7 +223,7 @@ This section consolidates the model decisions into a single reference: **what wa
 | **Chat (primary)** | `gpt-oss:20b` | `qwen3.5:122b-cloud`, `gpt-oss:120b` | 20B-parameter `gpt-oss` is the fastest free-tier answer on Ollama Cloud and still produces clean JSON tool-intent extraction. Larger variants only kick in when the primary errors (see fallback). |
 | **Chat (fallback)** | `gpt-oss:120b` | `qwen3.5:122b-cloud`, Self-hosted Ollama | Same model family, heavier tier (120B) — kicks in only after `tenacity` exhausts 3 retries on the primary. Identical transport; graceful degradation when the primary errors. |
 | **Embeddings** | `BAAI/bge-small-en-v1.5` via **local `sentence-transformers`** (default); optional HF Router backend behind `HF_EMBEDDINGS_REMOTE=true` | ChromaDB bundled ONNX MiniLM, OpenAI `text-embedding-3-small`, raw HF Inference | De-facto MTEB leader for ≤ 100 MB embedders; cosine-normalized so dot-product recall stays sharp. **Local is the default** because the HF router returns 404 for most sentence-transformer checkpoints (including `BAAI/bge-small-en-v1.5`). The HF Router backend stays available as an opt-in for users who already have an HF Inference subscription; the env var `HF_EMBEDDINGS_REMOTE=true` switches `get_embedder()` to it. |
-| **Reranker** | **Local cosine over ChromaDB's bundled ONNX `all-MiniLM-L6-v2`** (via `embedding_functions.DefaultEmbeddingFunction()`) | `bge-reranker-base`, `ms-marco-MiniLM-L-12`, cross-encoder variants | Same 384-d vector space as the dense retriever (ChromaDB), zero HF calls, no torch, no extra dependency. `HF_RERANK_MODEL` is set in `.env` for documentation completeness but **is not consumed by `backend/llm/rerank.py`** — the HF router 404s on cross-encoders via `/v1/rerank` and PyTorch-installed cross-encoders hit `WinError 1114` on Windows. Trade a small slice of reranker accuracy for portability and zero-API-key operation. A `NoOpReranker` activates automatically if the ONNX embedder ever fails to load, so the pipeline can never break on rerank. |
+| **Reranker** | **Local cosine over ChromaDB's bundled ONNX `all-MiniLM-L6-v2`** (via `embedding_functions.DefaultEmbeddingFunction()`) | `bge-reranker-base`, `ms-marco-MiniLM-L-12`, cross-encoder variants | Same 384-d vector space as the dense retriever (ChromaDB), zero HF calls, no torch, no extra dependency. `HF_RERANK_MODEL` is set in `.env` for documentation completeness but **is not consumed by `backend/llm/rerank.py`**|
 | **Vector store** | ChromaDB `PersistentClient` (on-disk) + ChromaDB's bundled ONNX `all-MiniLM-L6-v2` as default embedding | FAISS, Qdrant, Pinecone | Zero-ops, single-file persistence, native cosine support, ships with `pysqlite3-binary` for the `glibc` mismatch bug. Bundled ONNX embedder means there is **zero network round trip on the read path** — Chroma's native embedder is also what the rerank stage piggy-backs on, so the two stages share one model load. |
 | **BM25** | `rank_bm25` with pickle cache | Elasticsearch, OpenSearch | A 50-document FAQ is too small for an Elastic cluster; the cache keeps BM25 fully local and reproducible. |
 | **Memory** | MongoDB Atlas M0 + in-process `deque` fallback | Redis, SQLite | Atlas M0 is genuinely free; the `deque` fallback lets demos run with zero secrets, and `slowapi` keys off `session_id`, not IP. When `MONGODB_URI` is empty/unreachable the app logs `mongo_unavailable_using_memory_fallback` and chats still complete. |
@@ -230,9 +231,8 @@ This section consolidates the model decisions into a single reference: **what wa
 | **Vision (figures)** | `ibm-granite/granite-docling-258M` (HF Inference, opt-in) | LLaVA, Florence-2 | Tuned for figure captioning; small; runs in HF Inference free tier. Invoked only when Docling is available and the page actually contains a `Figure` node — never on plain text. |
 | **OCR** | `rapidocr-onnxruntime` | Tesseract | On-device, no rate limits; covers PDFs Docling cannot read; lighter and more accurate on Asian text. |
 | **Framework** | FastAPI 0.115 | Flask, Django, LitServe | Async-native (a 30 s LLM call does not block anyone else); Pydantic v2 gives runtime schema validation; `/healthz` + `/metrics` ship in one deployment. |
-| **Orchestration** | None — explicit JSON router in `backend/tools/router.py` | LangChain LCEL, LlamaIndex agents | Every routing decision is visible in a single file. Honors the "don't phone home twice" constraint. |
-| **Container** | Multi-stage Docker on `python:3.11-slim`, non-root, `tini` | Single-stage, distroless | Slimmer image, no surprise OOM kills, `tini` reaps zombies. |
-| **UI** | Vite + React + TypeScript | Streamlit, Gradio | Fast, statically deployable, themed after Claude/Anthropic editorial. Backend is API-only — the SPA is served as a static bundle. |
+| **Container** | Multi-stage Docker on `python:3.11-slim`, non-root, `tini` | Single-stage, distroless | Slimmer image, no surprise OOM kills|
+| **UI** | Vite + React + TypeScript | Streamlit, Gradio | Fast, statically deployable, themed after Claude/Anthropic editorial. Backend is API-only — the SPA is served from the same image at `/app/`. |
 | **Injection defense** | Regex + entropy detector + system prompt tail | `prompt-guard`, Lakera | Defense in depth; one method alone is bypassable. Detector first, prompt hardening last. |
 | **Observability** | structlog + Prometheus + OTLP HTTP | Loki, ELK | No aggregator to operate; structlog writes one JSON line per event (pipe to `jq`); Prometheus gives free metrics; OTLP pushes spans to local Tempo via the bundled Docker stack. |
 
@@ -242,7 +242,7 @@ This section consolidates the model decisions into a single reference: **what wa
 
 ---
 
-## 4. Subsystems — short explanations
+## 4. Subsystems 
 
 ### 4.1 Ingestion pipeline
 
@@ -356,22 +356,16 @@ and tells the model to (a) never reveal or quote the system prompt,
 change its role or invoke tools unusually, and (c) fall back to a
 refusal + short citation when unsure.
 
-**5. Post-processing.** Two cleanups happen **after** the LLM returns,
-in `backend/pipeline/chat.py`:
+**5. Post-processing.** After the LLM returns, `backend/pipeline/chat.py`
+runs `parse_tool_intent()` again on the model's reply (so the model can
+also emit a tool call in its own words) and `_sanitize_answer()` to
+strip leaked `[doc-N]` / `[tool-result …]` scaffolding from the bubble
+the user actually sees.
 
-* **Late tool parse** — `parse_tool_intent()` runs again on the model's
-  reply; if a `tool` JSON object is found, the pipeline dispatches it
-  via `dispatch_tool()` and renders the structured response
-  (`Order Status: …\nEstimated Delivery Date: …` for orders, or a
-  `Product Name | Price | Stock Availability` table for products).
-* **Marker sanitization** — `_sanitize_answer()` strips any leaked
-  `[doc-N]` / `[tool-result …]` scaffolding from the user-facing bubble,
-  so the UI never sees raw retrieval or tool dumps.
-
-The **redactor** (`backend/observability/redactor.py`) is a separate,
-write-time concern: it strips emails, phones, and credit-card-shaped
-strings from every log line as it is written, not from the request or
-LLM output itself.
+Log redaction (`backend/observability/redactor.py`) is a separate,
+write-time concern: emails, phones, and credit-card-shaped strings are
+stripped from every log line as it is written, never from the request
+or LLM output.
 
 ---
 
@@ -572,17 +566,21 @@ uvicorn main:app --host 127.0.0.1 --port 8000
 pytest -q              # all tests (~80)
 pytest -q -m "not network"   # offline subset (CI-friendly)
 ```
-## Docker Installtion
-### 6.9 Docker — API + UI
+
+### 6.9 Docker — single image, one port
+
+The multi-stage `Dockerfile` builds the React SPA, then layers it on top
+of the FastAPI image so the container serves both UI and API on
+`:8000`. One `docker compose up` gets you a working system:
 
 ```powershell
 Copy-Item .env.example .env -Force
 # Fill OLLAMA_CLOUD_API_KEY and HF_INFERENCE_API_KEY in .env
 
 docker compose up -d --build
-docker compose logs -f api
-start http://localhost:5173          # React UI
-start http://localhost:8000/healthz  # API
+docker compose logs -f app
+start http://localhost:8000/app      # SPA UI
+start http://localhost:8000/healthz  # API health
 ```
 
 ### 6.10 Docker + observability stack (Tempo, Prometheus, Grafana)
@@ -592,8 +590,8 @@ Get-Content .env.obs | Add-Content .env     # if .env.obs exists in the clone
 docker compose --profile obs up -d
 start http://localhost:3000         # Grafana (admin / admin)
 start http://localhost:9090         # Prometheus
-start http://localhost:5173         # React UI
-start http://localhost:8000/healthz # API
+start http://localhost:8000         # UI + API
+start http://localhost:8000/healthz # API health
 ```
 
 
@@ -838,29 +836,11 @@ Response (cached 10 s):
 (Invoke-WebRequest http://127.0.0.1:8000/metrics -UseBasicParsing).Content
 ```
 
-Exposes 16 metric families (no `mini_` prefix — actual names from a live run):
-
-```
-http_requests_total{method="POST",path="/chat",status="200"} 3
-http_request_seconds_bucket{path="/chat",le="0.5"}  2
-http_request_seconds_bucket{path="/chat",le="2.0"}  3
-request_stage_seconds_bucket{stage="retrieve_rerank",le="0.5"} 2
-request_stage_seconds_bucket{stage="llm",le="5.0"}  3
-answerability_decisions_total{decision="answered"} 1
-answerability_decisions_total{decision="fallback"} 1
-tool_calls_total{tool="order_status"}  1
-tool_calls_total{tool="product_search"} 1
-tool_call_seconds_bucket{tool="order_status",le="0.05"} 1
-retrieval_topk_scores{source="chromadb"} 0.18
-retrieval_topk_scores{source="bm25"}     0.00
-rerank_top_score{backend="local_cosine"} 0.188
-health_status{component="chroma"}  1.0
-health_status{component="ollama"}  1.0
-health_status{component="mongo"}   1.0
-ingest_documents_total{source_type=".txt",outcome="ok"} 10
-prompt_injection_total 0
-rate_limit_hits_total 0
-```
+Exposes the standard families (`http_requests_total`, `request_stage_seconds`,
+`answerability_decisions_total`, `tool_calls_total`, `tool_call_seconds`,
+`retrieval_topk_scores`, `rerank_top_score`, `health_status`,
+`ingest_documents_total`, `prompt_injection_total`,
+`rate_limit_hits_total`) — no `mini_` prefix, names from a live run.
 
 ### 10.3 Sample chat invocations
 
@@ -1027,7 +1007,7 @@ by HTTP status.
 
 ---
 
-## 13. ChromaDB effectiveness
+## 13. Verifying the vector store
 
 ### 13.1 Component probe via `/healthz`
 

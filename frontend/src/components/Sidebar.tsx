@@ -10,7 +10,6 @@ import {
   type KbSourcesResponse,
   type SessionSummary,
 } from "../api/client";
-import { StatusPill } from "./StatusPill";
 
 interface Props {
   activeSid: string | null;
@@ -21,11 +20,6 @@ interface Props {
   onKbChanged: () => void;
 }
 
-/**
- * Sidebar with: new-chat button, knowledge-base ingest + per-source clearing,
- * persistent session list (server-side, merged with local titles), rename,
- * and a live /healthz pill.
- */
 export function Sidebar(props: Props) {
   const { activeSid, titles, onTitlesChange, onNewChat, onSwitchChat, onKbChanged } = props;
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -44,7 +38,7 @@ export function Sidebar(props: Props) {
       setSessions(s.sessions ?? []);
       setKb(k);
     } catch {
-      // Keep previous state; the StatusPill surfaces the failure.
+      /* StatusPill surfaces the failure */
     }
   };
 
@@ -64,13 +58,10 @@ export function Sidebar(props: Props) {
           setIngestNotice({
             kind: "warn",
             text:
-              "Vector index is unrecoverable in this process. Restart the API or run `make recover-chroma`, then upload again.",
+              "Vector index is unrecoverable in this process. Restart the API and upload again.",
           });
         } else {
-          setIngestNotice({
-            kind: "err",
-            text: `Couldn't index ${file.name}: ${why}`,
-          });
+          setIngestNotice({ kind: "err", text: `Couldn't index ${file.name}: ${why}` });
         }
       } else {
         let msg = `Indexed ${r.chunks} chunks from ${r.source}`;
@@ -117,7 +108,7 @@ export function Sidebar(props: Props) {
     try {
       await deleteSession(sid);
     } catch {
-      /* ignore — UI will still remove it locally */
+      /* UI still removes it locally */
     }
     const next = { ...titles };
     delete next[sid];
@@ -132,7 +123,7 @@ export function Sidebar(props: Props) {
     try {
       await renameSession(sid, v);
     } catch {
-      /* server is a no-op for rename; local title still updates */
+      /* server rename is a no-op; local title still updates */
     }
     onTitlesChange({ ...titles, [sid]: v });
     setRenameTarget(null);
@@ -159,7 +150,6 @@ export function Sidebar(props: Props) {
           onChange={(e) => {
             const f = e.target.files?.[0];
             if (f) handleUpload(f);
-            // Reset so the same file can be re-picked.
             e.target.value = "";
           }}
         />
@@ -283,13 +273,6 @@ export function Sidebar(props: Props) {
             </div>
           );
         })}
-      </div>
-
-      <hr />
-
-      <div>
-        <h3>Status</h3>
-        <StatusPill />
       </div>
     </aside>
   );

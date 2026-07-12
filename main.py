@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
@@ -43,7 +44,7 @@ async def lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="MiniCo Docs", version="0.2.2", lifespan=lifespan)
+    app = FastAPI(title="Mini AI Assistant", version="0.2.2", lifespan=lifespan)
 
     # Rate limiter state — slowapi requires this on the app.
     app.state.limiter = limiter
@@ -53,8 +54,53 @@ def create_app() -> FastAPI:
     # Cache parsed JSON body on request.state so the slowapi key_func can read session_id.
     app.add_middleware(BaseHTTPMiddleware, dispatch=_attach_request_id_json)
 
-    # Routes.
+    # Routes — registered before any catch-all so /chat, /healthz, /metrics
+    # always take precedence over the SPA's index.html handler.
     app.include_router(router)
+
+    # Serve the built SPA when present (Docker image, or after `npm run
+    # build` in a checkout). Anything that isn't an API route falls through
+    # to index.html so React Router can take over.
+    _web_dist = os.path.join(os.path.dirname(__file__), "web", "dist")
+    _index_html = os.path.join(_web_dist, "index.html")
+    if os.path.isfile(_index_html):
+        from fastapi.responses import FileResponse
+
+        # Mount the SPA at /app/ first so users have an explicit UI entry
+        # point that doesn't collide with the API catalog at "/".
+        app.mount(
+            "/app/assets",
+            StaticFiles(directory=os.path.join(_web_dist, "assets")),
+            name="spa-app-assets",
+        )
+
+        @app.get("/app/{full_path:path}", include_in_schema=False)
+        async def _spa_app_route(full_path: str):  # type: ignore[no-untyped-def]
+            """SPA under /app/ — real files win, everything else → index.html."""
+            candidate = os.path.join(_web_dist, full_path)
+            if full_path and os.path.isfile(candidate):
+                return FileResponse(candidate)
+            return FileResponse(_index_html)
+
+        @app.get("/app", include_in_schema=False)
+        async def _spa_app_root():  # type: ignore[no-untyped-def]
+            return FileResponse(_index_html)
+
+        # Any other unknown path also returns index.html so deep links
+        # (e.g. /random/spa) still render the SPA — the real file lookup
+        # below also handles /favicon.png, /robots.txt, etc.
+        @app.get("/{full_path:path}", include_in_schema=False)
+        async def _spa_catch_all(full_path: str):  # type: ignore[no-untyped-def]
+            candidate = os.path.join(_web_dist, full_path)
+            if full_path and os.path.isfile(candidate):
+                return FileResponse(candidate)
+            return FileResponse(_index_html)
+
+        app.mount(
+            "/assets",
+            StaticFiles(directory=os.path.join(_web_dist, "assets")),
+            name="spa-assets",
+        )
 
     # Rate-limit handler.
     handler = make_exception_handler()

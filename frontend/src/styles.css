@@ -1,7 +1,5 @@
 /* Mini AI Assistant — editorial / Claude-inspired styling.
- *
- * Single global stylesheet so we don't need a CSS pipeline (PostCSS, Tailwind,
- * etc.) in the build. Variables at the top keep the palette tweakable.
+ * Single global stylesheet; CSS variables at the top keep the palette tweakable.
  */
 
 :root {
@@ -21,6 +19,8 @@
   --radius: 10px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Helvetica Neue",
     Arial, sans-serif;
+  --display: "Source Serif 4", "Source Serif Pro", "Iowan Old Style", "Apple Garamond",
+    Baskerville, "Times New Roman", Georgia, serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 
@@ -90,6 +90,13 @@ input[type="text"]:focus, textarea:focus {
   border-color: var(--accent);
 }
 
+/* Bold watermark inside the composer textarea. */
+textarea::placeholder {
+  color: var(--text);
+  font-weight: 600;
+  opacity: 1;
+}
+
 /* ----- Layout ---------------------------------------------------------- */
 .app {
   display: grid;
@@ -131,30 +138,55 @@ input[type="text"]:focus, textarea:focus {
   background: var(--bg);
 }
 .main-header {
-  padding: 18px 28px 12px 28px;
+  padding: 18px 28px 14px 28px;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }
-.main-header h1 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
+.header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
 }
-.main-header p {
+.brand-block {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+.brand-title {
+  margin: 0;
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 28px;
+  letter-spacing: -0.015em;
+  color: var(--text);
+}
+.brand-tagline {
   margin: 4px 0 0 0;
   color: var(--text-muted);
   font-size: 13px;
+  line-height: 1.5;
+}
+.tagline-divider {
+  margin: 0 6px;
+  color: var(--border-strong);
+}
+.tagline-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  letter-spacing: 0.01em;
 }
 .main-body {
   flex: 1 1 auto;
   overflow-y: auto;
   padding: 24px 28px;
 }
-.composer {
+.composer-wrap {
   border-top: 1px solid var(--border);
   background: var(--surface);
-  padding: 14px 28px;
+  padding: 14px 28px 14px 28px;
+}
+.composer {
   display: flex;
   gap: 10px;
   align-items: flex-end;
@@ -164,6 +196,50 @@ input[type="text"]:focus, textarea:focus {
   min-height: 44px;
   max-height: 180px;
   line-height: 1.5;
+}
+
+/* ----- API status dot + popup ------------------------------------------ */
+.status-slot { position: relative; flex-shrink: 0; }
+.api-dot-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+}
+.api-dot-btn:hover:not(:disabled) {
+  background: var(--surface-2);
+  border-color: var(--border-strong);
+}
+.api-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #4a8a4a;
+  box-shadow: 0 0 0 2px rgba(74, 138, 74, 0.18);
+}
+.api-popup {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 20;
+  min-width: 240px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+}
+.api-popup-head {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
 }
 
 /* ----- Sidebar pieces -------------------------------------------------- */
@@ -184,8 +260,8 @@ input[type="text"]:focus, textarea:focus {
   align-items: center;
   gap: 8px;
   text-align: left;
-  background: transparent;
-  border-color: transparent;
+  background: var(--surface);
+  border-color: var(--border);
   padding: 6px 8px;
   white-space: nowrap;
   overflow: hidden;
@@ -193,11 +269,12 @@ input[type="text"]:focus, textarea:focus {
   min-width: 0;
 }
 .session-row button.open:hover:not(:disabled) {
-  background: var(--surface);
+  background: var(--surface-2);
+  border-color: var(--border-strong);
 }
 .session-row button.open.active {
-  background: var(--surface);
-  border-color: var(--border);
+  background: var(--accent-soft);
+  border-color: var(--accent);
   color: var(--accent-ink);
   font-weight: 600;
 }
@@ -233,8 +310,8 @@ input[type="text"]:focus, textarea:focus {
   padding: 0;
   font-size: 14px;
   color: var(--text-muted);
-  background: transparent;
-  border-color: transparent;
+  background: var(--surface);
+  border-color: var(--border);
 }
 .session-row button.rename:hover:not(:disabled),
 .session-row button.del:hover:not(:disabled) {
@@ -247,8 +324,11 @@ input[type="text"]:focus, textarea:focus {
   grid-template-columns: 1fr 28px;
   gap: 6px;
   align-items: center;
-  padding: 4px 0;
+  padding: 6px 8px;
   font-size: 13px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
 }
 .kb-row .src {
   overflow: hidden;
@@ -260,16 +340,22 @@ input[type="text"]:focus, textarea:focus {
   font-size: 11px;
 }
 
-/* ----- Status pill ----------------------------------------------------- */
+/* ----- Status block (popup body) --------------------------------------- */
+.status-block { font-size: 12px; }
+.status-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .status-pill {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 12px;
   padding: 3px 9px;
   border-radius: 999px;
-  background: var(--surface);
+  background: var(--surface-2);
   border: 1px solid var(--border);
+  color: var(--text);
 }
 .status-pill .dot {
   width: 8px;
@@ -279,38 +365,109 @@ input[type="text"]:focus, textarea:focus {
 .status-pill.up .dot { background: #4a8a4a; }
 .status-pill.degraded .dot { background: #c69e2a; }
 .status-pill.down .dot { background: #b8412e; }
-.status-pill.unknown .dot { background: #999; }
+.status-pill.checking .dot { background: #999; }
+.status-refresh {
+  padding: 2px 8px;
+  font-size: 12px;
+  border-radius: 999px;
+}
 .components {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  font-size: 12px;
-  color: var(--text-muted);
-  margin-top: 6px;
+  gap: 4px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  color: var(--text);
 }
 .components .row {
   display: flex;
   justify-content: space-between;
   gap: 12px;
 }
+.components .row .ok { color: #2c5a2c; }
+.components .row .bad { color: #7a2a1d; }
+
+/* ----- Hero / starter cards ------------------------------------------- */
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 48px 24px 32px 24px;
+}
+.hero-title {
+  font-family: var(--display);
+  font-weight: 800;
+  font-size: 30px;
+  margin: 0 0 6px 0;
+  letter-spacing: -0.015em;
+}
+.hero-sub {
+  color: var(--text-muted);
+  max-width: 480px;
+  margin: 0 0 28px 0;
+  font-size: 14px;
+}
+.starter-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+  max-width: 640px;
+}
+.starter-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  text-align: left;
+  gap: 6px;
+  padding: 14px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  font-family: var(--font);
+}
+.starter-card:hover:not(:disabled) {
+  background: var(--surface);
+  border-color: var(--accent);
+}
+.starter-kicker {
+  font-family: var(--display);
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  color: var(--accent-ink);
+  text-transform: uppercase;
+}
+.starter-body {
+  color: var(--text-muted);
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.4;
+}
 
 /* ----- Chat bubbles ---------------------------------------------------- */
 .message {
   display: flex;
-  margin-bottom: 18px;
+  margin-bottom: 10px;
 }
 .message.user { justify-content: flex-end; }
 .message.assistant { justify-content: flex-start; }
 .bubble {
-  max-width: 760px;
-  padding: 12px 16px;
+  max-width: 680px;
+  padding: 8px 12px;
   border-radius: var(--radius);
   border: 1px solid var(--border);
   background: var(--assistant-bubble);
   box-shadow: var(--shadow);
   white-space: pre-wrap;
   word-wrap: break-word;
+  font-size: 14px;
+  line-height: 1.5;
 }
+.bubble-content { font-size: 14px; line-height: 1.5; }
 .message.user .bubble {
   background: var(--user-bubble);
   border-color: var(--border);
@@ -319,6 +476,19 @@ input[type="text"]:focus, textarea:focus {
   margin-top: 6px;
   font-size: 11px;
   color: var(--text-muted);
+  letter-spacing: 0.02em;
+}
+.cursor {
+  display: inline-block;
+  width: 7px;
+  height: 14px;
+  margin-left: 2px;
+  vertical-align: text-bottom;
+  background: var(--accent);
+  animation: blink 1s steps(2, jump-none) infinite;
+}
+@keyframes blink {
+  to { visibility: hidden; }
 }
 .sources {
   margin-top: 8px;
@@ -334,19 +504,6 @@ input[type="text"]:focus, textarea:focus {
 .sources ul { margin: 0; padding-left: 16px; }
 .sources li { margin: 2px 0; color: var(--text-muted); }
 
-/* ----- Empty state ----------------------------------------------------- */
-.empty {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  height: 100%;
-  color: var(--text-muted);
-  text-align: center;
-  padding: 24px;
-}
-.empty h2 { color: var(--text); margin: 0 0 8px 0; }
-
 /* ----- Toasts / inline notices ----------------------------------------- */
 .notice {
   font-size: 12px;
@@ -358,8 +515,21 @@ input[type="text"]:focus, textarea:focus {
 .notice.warn { background: #fbf2dd; color: #6e5418; }
 .notice.err { background: #fbe6e2; color: #7a2a1d; }
 
-/* Responsive: collapse sidebar on narrow screens. */
+/* ----- Responsive ------------------------------------------------------ */
+@media (max-width: 880px) {
+  .main-header { padding: 14px 20px; }
+  .main-body { padding: 20px; }
+  .composer-wrap { padding: 12px 20px; }
+  .bubble { max-width: 100%; }
+}
 @media (max-width: 760px) {
   .app { grid-template-columns: 1fr; }
   .sidebar { display: none; }
+  .starter-grid { grid-template-columns: 1fr; }
+  .brand-title { font-size: 22px; }
+  .hero-title { font-size: 24px; }
+  .hero { padding: 28px 12px 16px 12px; }
+  .tagline-hint { display: block; margin-top: 2px; }
+  .tagline-divider { display: none; }
+  .header-row { gap: 8px; }
 }

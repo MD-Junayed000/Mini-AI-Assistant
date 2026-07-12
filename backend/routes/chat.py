@@ -83,7 +83,7 @@ async def root() -> dict:
     return {
         "service": "Mini AI Assistant",
         "version": "0.3.0",
-        "ui": "http://localhost:5173 (run `npm run dev` from frontend/)",
+        "ui": "/app/ (single-image deploy) or http://localhost:5173 (vite dev)",
         "endpoints": {
             "POST /chat": "send a chat message (JSON: {session_id, message})",
             "POST /ingest": "upload a PDF/TXT/MD document for retrieval",

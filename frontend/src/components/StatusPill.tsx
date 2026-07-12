@@ -1,14 +1,32 @@
 import { useEffect, useState } from "react";
 import { getHealth, type HealthResponse } from "../api/client";
 
-/**
- * Connection-status pill rendered in the sidebar. Polls `/healthz` every
- * 15 seconds (well below the backend's 10s TTL cache) so the operator gets
- * live feedback without hammering the API.
- */
-export function StatusPill() {
+const POLL_MS = 15_000;
+
+type State = "up" | "degraded" | "down" | "checking";
+
+const STATE_LABEL: Record<State, string> = {
+  up: "up",
+  degraded: "degraded",
+  down: "down",
+  checking: "Checking…",
+};
+
+function overallToState(h: HealthResponse | null): State {
+  if (!h) return "checking";
+  if (h.overall === "up") return "up";
+  if (h.overall === "degraded") return "degraded";
+  if (h.overall === "down") return "down";
+  return "checking";
+}
+
+interface Props {
+  /** When true, also render the per-component list (used inside the popup). */
+  detailed?: boolean;
+}
+
+export function StatusPill({ detailed = false }: Props) {
   const [h, setH] = useState<HealthResponse | null>(null);
-  const [tick, setTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -17,53 +35,55 @@ export function StatusPill() {
         const r = await getHealth();
         if (!cancelled) setH(r);
       } catch (err) {
-        if (!cancelled)
-          setH({ overall: "down", components: {}, error: String(err) });
+        if (!cancelled) setH({ overall: "down", components: {}, error: String(err) });
       }
     };
     fetchOnce();
-    const t = window.setInterval(fetchOnce, 15_000);
+    const t = window.setInterval(fetchOnce, POLL_MS);
     return () => {
       cancelled = true;
       window.clearInterval(t);
     };
-  }, [tick]);
+  }, []);
 
-  // Re-fetch on manual click.
-  const refresh = () => setTick((n) => n + 1);
+  const refresh = () => {
+    void (async () => {
+      try {
+        setH(await getHealth());
+      } catch (err) {
+        setH({ overall: "down", components: {}, error: String(err) });
+      }
+    })();
+  };
 
-  const state = (h?.overall ?? "unknown") as
-    | "up"
-    | "degraded"
-    | "down"
-    | "unknown";
-  const label =
-    state === "up"
-      ? "connected"
-      : state === "degraded"
-        ? "degraded"
-        : state === "down"
-          ? "unreachable"
-          : "checking…";
+  const state = overallToState(h);
   const comps = h?.components ?? {};
+  const showDetails = detailed && Object.keys(comps).length > 0;
 
   return (
-    <div>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+    <div className="status-block">
+      <div className="status-row">
         <span className={`status-pill ${state}`}>
           <span className="dot" />
-          API: {label}
+          API {STATE_LABEL[state]}
         </span>
-        <button onClick={refresh} style={{ padding: "2px 8px", fontSize: 12 }}>
+        <button
+          className="status-refresh"
+          onClick={refresh}
+          title="Re-check now"
+          aria-label="Re-check status"
+        >
           ↻
         </button>
       </div>
-      {Object.keys(comps).length > 0 && (
+      {showDetails && (
         <div className="components">
-          {Object.entries(comps).map(([name, state]) => (
+          {Object.entries(comps).map(([name, st]) => (
             <div className="row" key={name}>
               <span>{name}</span>
-              <span>{state === "up" ? "✓" : "✗"}</span>
+              <span className={st === "up" ? "ok" : "bad"}>
+                {st === "up" ? STATE_LABEL.up : STATE_LABEL.down}
+              </span>
             </div>
           ))}
         </div>

@@ -1,139 +1,32 @@
-# =============================================================================
-# Mini AI Assistant — local stack
-# Bring up the API + UI (+ optional Prometheus, Grafana, Tempo).
-# Mongo is optional; the app falls back to in-process memory if Atlas is absent.
-# =============================================================================
+# One service, one image, one port. The Dockerfile builds the React SPA and
+# the FastAPI app together, then runs uvicorn on :8000. FastAPI serves both
+# the API routes and the built /web/dist as static files.
 
 services:
-  api:
+  app:
     build:
       context: .
       dockerfile: Dockerfile
-      target: runtime          # only build the runtime stage (skip builder cache lookup)
-    image: mini-ai-assistant:api
-    container_name: mini-ai-api
+    image: mini-ai-assistant:latest
+    container_name: mini-ai-assistant
     restart: unless-stopped
-    env_file:
-      - .env
     ports:
       - "8000:8000"
+    environment:
+      # Override any of these in a .env file or your shell. Sensible local
+      # defaults are baked into the app; only set what you need.
+      APP_ENV: production
+      LOG_LEVEL: INFO
     volumes:
-      - ./data:/app/data:ro         # source docs (read-only)
-      - chroma_data:/app/.chroma    # persisted vector + BM25 cache
-      - log_data:/app/logs          # rotating JSON logs
+      # Persist user uploads and the Chroma index across container restarts.
+      - ./data:/app/data
+      - chroma-data:/app/.chroma
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz"]
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status == 200 else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 20s
-    # Join the obs profile's network so the app can reach Tempo by name
-    # without hard-coding the host.
-    networks:
-      - appnet
-
-  ui:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      target: runtime          # UI uses the same runtime stage; streamlit pulls deps from requirements.txt
-    image: mini-ai-assistant:ui
-    container_name: mini-ai-ui
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      API_BASE_URL: http://api:8000
-    ports:
-      - "8501:8501"
-    volumes:
-      - log_data:/app/logs
-    depends_on:
-      api:
-        condition: service_healthy
-    command:
-      - streamlit
-      - run
-      - ui/streamlit_app.py
-      - --server.address=0.0.0.0
-      - --server.port=8501
-    networks:
-      - appnet
-
-  # ---------------------------- Observability ----------------------------
-  # Bring up the whole local observability stack with:
-  #     docker compose --profile obs up -d
-  # That's Grafana (UI), Tempo (traces), and Prometheus (metrics) wired
-  # together by a single datasource. They talk to each other + the API
-  # over the `appnet` network so service names resolve automatically.
-
-  tempo:
-    image: grafana/tempo:2.5.0
-    container_name: mini-ai-tempo
-    profiles: ["obs"]
-    command: ["-config.file=/etc/tempo.yaml"]
-    volumes:
-      - ./ops/tempo.yaml:/etc/tempo.yaml:ro
-      - tempo_data:/var/tempo
-    ports:
-      - "4317:4317"   # OTLP gRPC
-      - "4318:4318"   # OTLP HTTP  <-- this is what the app uses
-    networks:
-      - appnet
-
-  prometheus:
-    image: prom/prometheus:v2.54.1
-    container_name: mini-ai-prometheus
-    profiles: ["obs"]
-    volumes:
-      - ./ops/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./ops/alerts.yaml:/etc/prometheus/alerts.yaml:ro
-    ports:
-      - "9090:9090"
-    depends_on:
-      - api
-    networks:
-      - appnet
-
-  grafana:
-    image: grafana/grafana:11.2.0
-    container_name: mini-ai-grafana
-    profiles: ["obs"]
-    environment:
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
-      GF_SECURITY_ADMIN_PASSWORD: admin
-    volumes:
-      - ./ops/grafana/provisioning:/etc/grafana/provisioning:ro
-      - ./ops/grafana/dashboard.json:/var/lib/grafana/dashboards/mini-ai.json:ro
-      - grafana_data:/var/lib/grafana
-    ports:
-      - "3000:3000"
-    depends_on:
-      - prometheus
-      - tempo
-    networks:
-      - appnet
-
-  # Optional self-hosted Mongo for dev (commented — Atlas free tier
-  # is the default). Uncomment to run completely offline.
-  #
-  # mongo:
-  #   image: mongo:7
-  #   container_name: mini-ai-mongo
-  #   restart: unless-stopped
-  #   volumes:
-  #     - mongo_data:/data/db
-  #   networks:
-  #     - appnet
 
 volumes:
-  chroma_data:
-  log_data:
-  tempo_data:
-  grafana_data:
-  # mongo_data:
-
-networks:
-  appnet:
-    driver: bridge
+  chroma-data:

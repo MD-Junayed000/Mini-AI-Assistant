@@ -1,79 +1,49 @@
-# =============================================================================
-# Mini AI Assistant — production-ish image
-# Multi-stage: builder (compiles wheels) → runtime (slim, non-root)
-# =============================================================================
+﻿# Multi-stage build for Mini AI Assistant.
+#
+# Stage 1 — frontend: install Node deps, build the React/Vite SPA into
+#           /web/dist which the FastAPI app serves as static files.
+# Stage 2 — backend:  copy /web/dist + the Python sources into a slim image
+#           and run uvicorn. One image, one container, one port.
 
-# ---- Stage 1: builder ----------------------------------------------------
-FROM python:3.11-slim AS builder
+# ---------- Stage 1: frontend build --------------------------------------
+FROM node:20-alpine AS web
+
+WORKDIR /web
+
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm install --no-audit --no-fund
+
+COPY frontend/ ./
+RUN npm run build
+
+# ---------- Stage 2: backend runtime --------------------------------------
+FROM python:3.11-slim AS app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
-
-# Build tooling for chromadb, docling, onnxruntime wheels.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    gcc \
-    g++ \
-    libffi-dev \
-    libssl-dev \
-    libxml2-dev \
-    libxslt1-dev \
-    zlib1g-dev \
-    && rm -rf /var/lib/apt/lists/*
+    PIP_NO_CACHE_DIR=1
 
 WORKDIR /app
 
-# Layer 1: requirements only (cached when source changes)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends build-essential poppler-utils \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt ./
-# BuildKit cache mount keeps pip wheels between builds — much faster rebuilds.
-# --no-build-isolation avoids pip spinning up an isolated build env that
-# runs out of memory compiling grpcio/onnxruntime tokenizers.
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --upgrade pip && \
-    pip install --no-build-isolation --prefer-binary -r requirements.txt
+RUN pip install --upgrade pip && pip install -r requirements.txt
 
+COPY backend/ ./backend/
+COPY main.py ./
+COPY pyproject.toml ./
+COPY ops/ ./ops/
+COPY data/ ./data/
+COPY docs/ ./docs/
 
-# ---- Stage 2: runtime ----------------------------------------------------
-FROM python:3.11-slim AS runtime
+COPY --from=web /web/dist /web/dist
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PATH="/app/.local/bin:${PATH}"
+EXPOSE 8000
 
-# Slim runtime deps only — no compilers.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    curl \
-    tini \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --create-home --uid 1000 mini
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status == 200 else 1)"
 
-WORKDIR /app
-
-# Copy installed packages from builder.
-COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
-COPY --from=builder /usr/local/bin /usr/local/bin
-
-# Copy source.
-COPY --chown=mini:mini . /app
-
-# Persistent dirs.
-RUN mkdir -p /app/.chroma /app/logs /app/data \
-    && chown -R mini:mini /app
-
-USER mini
-
-EXPOSE 8000 8501
-
-# Healthcheck hits the FastAPI endpoint (cached, so cheap).
-HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-    CMD curl -fsS http://127.0.0.1:8000/healthz || exit 1
-
-ENTRYPOINT ["/usr/bin/tini", "--"]
-
-# Default = API; compose overrides to "streamlit run" for the UI service.
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

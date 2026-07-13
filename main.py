@@ -14,6 +14,7 @@ os.environ.setdefault("CHROMA_TELEMETRY_DISABLED", "True")
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from slowapi.errors import RateLimitExceeded
@@ -69,6 +70,13 @@ async def lifespan(app: FastAPI):
         await mem.close()
 
 
+def _cors_origins() -> list[str]:
+    raw = get_settings().cors_origins.strip()
+    if not raw or raw == "*":
+        return ["*"]
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
 def create_app() -> FastAPI:
     app = FastAPI(title="Mini AI Assistant", version="0.2.2", lifespan=lifespan)
 
@@ -79,6 +87,14 @@ def create_app() -> FastAPI:
     app.add_middleware(RequestIDMiddleware)
     # Cache parsed JSON body on request.state so the slowapi key_func can read session_id.
     app.add_middleware(BaseHTTPMiddleware, dispatch=_attach_request_id_json)
+    # Outermost — must handle OPTIONS preflight before other middleware.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins(),
+        allow_credentials=False,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     # Routes — registered before any catch-all so /chat, /healthz, /metrics
     # always take precedence over the SPA's index.html handler.

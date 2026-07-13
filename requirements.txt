@@ -20,7 +20,9 @@ tokenizers<0.21
 
 # sentence-transformers / transformers — required because the configured HF
 # embedding model (BAAI/bge-small-en-v1.5) is loaded via the transformers stack
-# on first boot and cached to disk.
+# on first boot and cached to disk. Chroma's SentenceTransformerEmbeddingFunction
+# imports sentence_transformers directly (not bundled with chromadb).
+sentence-transformers==3.4.1
 torch==2.4.1
 torchvision==0.19.1
 torchaudio==2.4.1

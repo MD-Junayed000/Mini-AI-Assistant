@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Sidebar } from "./components/Sidebar";
 import { ChatPane } from "./components/ChatPane";
-import { bootstrapSession, listSessions, type SessionSummary } from "./api/client";
+import {
+  bootstrapSession,
+  listSessions,
+  type SessionSummary,
+} from "./api/client";
 
 function newSid(): string {
   const bytes = new Uint8Array(6);
@@ -34,18 +38,28 @@ export default function App() {
   const [activeSid, setActiveSid] = useState<string | null>(() => {
     return localStorage.getItem(ACTIVE_SID_KEY) ?? newSid();
   });
+
   const [titles, setTitles] = useState<Record<string, string>>(() =>
     readJSON<Record<string, string>>(TITLES_KEY, {}),
   );
+
   const [knownSids, setKnownSids] = useState<string[]>(() =>
     readJSON<string[]>(KNOWN_SIDS_KEY, []),
   );
+
   const [serverSessions, setServerSessions] = useState<SessionSummary[]>([]);
+
   const [touchTick, setTouchTick] = useState(0);
+
+  // Mobile sidebar state
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
   const refreshTimer = useRef<number | null>(null);
 
   useEffect(() => {
-    if (activeSid) localStorage.setItem(ACTIVE_SID_KEY, activeSid);
+    if (activeSid) {
+      localStorage.setItem(ACTIVE_SID_KEY, activeSid);
+    }
   }, [activeSid]);
 
   useEffect(() => {
@@ -58,66 +72,93 @@ export default function App() {
 
   useEffect(() => {
     if (!activeSid) return;
-    setKnownSids((prev) => (prev.includes(activeSid) ? prev : [activeSid, ...prev]));
+
+    setKnownSids((prev) =>
+      prev.includes(activeSid) ? prev : [activeSid, ...prev],
+    );
   }, [activeSid]);
 
   const mergedSessions = useMemo<LocalChat[]>(() => {
     const byId = new Map<string, LocalChat>();
+
     for (const s of serverSessions) {
       byId.set(s.session_id, {
         sid: s.session_id,
         lastActive: (s.last_ts ?? 0) * 1000,
-        title: titles[s.session_id] ?? s.title ?? `session ${s.session_id.slice(0, 8)}`,
+        title:
+          titles[s.session_id] ??
+          s.title ??
+          `Session ${s.session_id.slice(0, 8)}`,
         serverKnown: true,
         everUsed: true,
       });
     }
+
     for (const sid of knownSids) {
       const existing = byId.get(sid);
+
       if (existing) {
-        if (titles[sid]) existing.title = titles[sid];
+        if (titles[sid]) {
+          existing.title = titles[sid];
+        }
       } else {
         byId.set(sid, {
           sid,
           lastActive: 0,
-          title: titles[sid] ?? `session ${sid.slice(0, 8)}`,
+          title: titles[sid] ?? `Session ${sid.slice(0, 8)}`,
           serverKnown: false,
           everUsed: false,
         });
       }
     }
+
     const order = new Map<string, number>();
-    knownSids.forEach((sid, i) => order.set(sid, i));
+    knownSids.forEach((sid, index) => order.set(sid, index));
+
     return Array.from(byId.values()).sort((a, b) => {
-      if (b.lastActive !== a.lastActive) return b.lastActive - a.lastActive;
+      if (b.lastActive !== a.lastActive) {
+        return b.lastActive - a.lastActive;
+      }
+
       return (order.get(a.sid) ?? 999) - (order.get(b.sid) ?? 999);
     });
   }, [serverSessions, knownSids, titles, touchTick]);
 
   const refreshSessions = useCallback(async () => {
     try {
-      const r = await listSessions();
-      setServerSessions(r.sessions ?? []);
+      const result = await listSessions();
+      setServerSessions(result.sessions ?? []);
     } catch {
+      // ignore
     }
   }, []);
 
   useEffect(() => {
     void refreshSessions();
-    refreshTimer.current = window.setInterval(refreshSessions, 15_000);
+
+    refreshTimer.current = window.setInterval(refreshSessions, 15000);
+
     return () => {
-      if (refreshTimer.current) window.clearInterval(refreshTimer.current);
+      if (refreshTimer.current !== null) {
+        window.clearInterval(refreshTimer.current);
+      }
     };
   }, [refreshSessions]);
 
   const handleNewChat = useCallback(() => {
-    const prev = activeSid;
+    const previous = activeSid;
     const sid = newSid();
-    if (prev) {
-      setKnownSids((sids) => (sids.includes(prev) ? sids : [prev, ...sids]));
+
+    if (previous) {
+      setKnownSids((sids) =>
+        sids.includes(previous) ? sids : [previous, ...sids],
+      );
     }
+
     setActiveSid(sid);
+    setSidebarOpen(false);
     setTouchTick((n) => n + 1);
+
     void bootstrapSession(sid)
       .then(() => {
         void refreshSessions();
@@ -128,23 +169,35 @@ export default function App() {
   const handleSwitchChat = useCallback((sid: string | null) => {
     if (!sid) {
       setActiveSid(null);
+      setSidebarOpen(false);
       return;
     }
+
     setActiveSid((current) => {
       if (current && current !== sid) {
-        setKnownSids((sids) => (sids.includes(current) ? sids : [current, ...sids]));
+        setKnownSids((sids) =>
+          sids.includes(current) ? sids : [current, ...sids],
+        );
       }
+
       return sid;
     });
+
+    setSidebarOpen(false);
   }, []);
 
-  const handleTitlesChange = useCallback((next: Record<string, string>) => {
-    setTitles(next);
-  }, []);
+  const handleTitlesChange = useCallback(
+    (next: Record<string, string>) => {
+      setTitles(next);
+    },
+    [],
+  );
 
   const handleDeleteChat = useCallback((sid: string) => {
     setKnownSids((sids) => sids.filter((s) => s !== sid));
+
     setActiveSid((current) => (current === sid ? null : current));
+
     setTouchTick((n) => n + 1);
   }, []);
 
@@ -159,37 +212,13 @@ export default function App() {
 
   const sidebarTitles = useMemo<Record<string, string>>(() => {
     const out: Record<string, string> = {};
-    for (const c of mergedSessions) out[c.sid] = c.title;
+
+    for (const chat of mergedSessions) {
+      out[chat.sid] = chat.title;
+    }
+
     return out;
   }, [mergedSessions]);
-
-  // === NEW: Mobile Sidebar State ===
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-
-  const [titles, setTitles] = useState<Record<string, string>>(() =>
-    readJSON<Record<string, string>>(TITLES_KEY, {}),
-  );
-  const [knownSids, setKnownSids] = useState<string[]>(() =>
-    readJSON<string[]>(KNOWN_SIDS_KEY, []),
-  );
-  const [serverSessions, setServerSessions] = useState<SessionSummary[]>([]);
-  const [touchTick, setTouchTick] = useState(0);
-  const refreshTimer = useRef<number | null>(null);
-
-  // Close sidebar when switching chat on mobile
-  const handleSwitchChat = useCallback((sid: string | null) => {
-    if (!sid) {
-      setActiveSid(null);
-      return;
-    }
-    setActiveSid((current) => {
-      if (current && current !== sid) {
-        setKnownSids((sids) => (sids.includes(current) ? sids : [current, ...sids]));
-      }
-      return sid;
-    });
-    setSidebarOpen(false); // Close sidebar on mobile after selection
-  }, []);
 
   return (
     <div className="app">
@@ -204,14 +233,14 @@ export default function App() {
         onSessionsTouched={handleSessionsTouched}
         onKbChanged={handleKbChanged}
         refreshTrigger={touchTick}
-        isOpen={sidebarOpen}           // ← NEW PROP
-        onClose={() => setSidebarOpen(false)} // ← NEW PROP
+        isOpen={sidebarOpen}
+        onClose={() => setSidebarOpen(false)}
       />
-     <ChatPane 
-        sessionId={activeSid} 
+
+      <ChatPane
+        sessionId={activeSid}
         onSessionsTouched={handleSessionsTouched}
-        // Add mobile menu button in ChatPane header
-        onMenuClick={() => setSidebarOpen(true)}   // ← Pass this down
+        onMenuClick={() => setSidebarOpen(true)}
       />
     </div>
   );

@@ -22,6 +22,7 @@ export interface ChatPaneHandle {
 interface Props {
   sessionId: string | null;
   onSessionsTouched: () => void;
+  onMenuClick?: () => void;        // ← NEW
 }
 
 const STARTER_PROMPTS: { title: string; body: string }[] = [
@@ -44,7 +45,7 @@ const STARTER_PROMPTS: { title: string; body: string }[] = [
 ];
 
 export const ChatPane = forwardRef<ChatPaneHandle, Props>(function ChatPane(
-  { sessionId, onSessionsTouched },
+  { sessionId, onSessionsTouched, onMenuClick },
   ref,
 ) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -203,6 +204,15 @@ export const ChatPane = forwardRef<ChatPaneHandle, Props>(function ChatPane(
     <section className="main">
       <header className="main-header">
         <div className="header-row">
+                  {/* ==================== MOBILE MENU BUTTON ==================== */}
+            <button 
+              className="mobile-menu-btn"
+              onClick={onMenuClick}           // ← This will come from props
+              aria-label="Open sidebar"
+            >
+              ☰
+            </button>
+            {/* ======================================================== */}
           <div className="brand-block">
             <h1 className="brand-title">
               Mini AI Assistant

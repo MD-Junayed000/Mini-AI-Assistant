@@ -136,6 +136,21 @@ textarea::placeholder {
   border-top: 1px solid var(--border);
   margin: 0;
 }
+.sidebar-overlay{
+    display:none;
+}
+
+@media (max-width:760px){
+
+.sidebar-overlay{
+    display:block;
+    position:fixed;
+    inset:0;
+    background:rgba(0,0,0,.35);
+    z-index:99;
+}
+
+}
 .main {
   display: flex;
   flex-direction: column;

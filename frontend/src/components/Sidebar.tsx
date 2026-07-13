@@ -21,15 +21,19 @@ interface Props {
   activeSid: string | null;
   titles: Record<string, string>;
   sessions: LocalChat[];
+
   onTitlesChange: (next: Record<string, string>) => void;
   onNewChat: () => void;
   onSwitchChat: (sid: string | null) => void;
   onDeleteChat: (sid: string) => void;
   onSessionsTouched: () => void;
   onKbChanged: () => void;
+
   refreshTrigger: number;
-  isOpen,
-  onClose,
+
+  // Mobile sidebar
+  isOpen: boolean;
+  onClose: () => void;
 }
 
 type Notice = { kind: "ok" | "warn" | "err" | "info"; text: string };
@@ -41,16 +45,18 @@ function shortName(source: string): string {
 
 export function Sidebar(props: Props) {
   const {
-    activeSid,
-    titles,
-    sessions,
-    onTitlesChange,
-    onNewChat,
-    onSwitchChat,
-    onDeleteChat,
-    onSessionsTouched,
-    onKbChanged,
-    refreshTrigger,
+  activeSid,
+  titles,
+  sessions,
+  onTitlesChange,
+  onNewChat,
+  onSwitchChat,
+  onDeleteChat,
+  onSessionsTouched,
+  onKbChanged,
+  refreshTrigger,
+  isOpen,
+  onClose,
   } = props;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [kb, setKb] = useState<KbSourcesResponse | null>(null);

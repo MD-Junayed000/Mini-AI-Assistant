@@ -28,8 +28,8 @@ interface Props {
   onSessionsTouched: () => void;
   onKbChanged: () => void;
   refreshTrigger: number;
-  isOpen?: boolean;           // ← NEW
-  onClose?: () => void;       // ← NEW
+  isOpen,
+  onClose,
 }
 
 type Notice = { kind: "ok" | "warn" | "err" | "info"; text: string };
@@ -184,7 +184,13 @@ export function Sidebar(props: Props) {
 
   return (
    <aside className={`sidebar ${isOpen ? "open" : ""}`}>
-      <button className="new-chat-btn primary" onClick={onNewChat}>
+     <button
+        className="new-chat-btn primary"
+        onClick={() => {
+          onNewChat();
+          onClose?.();
+        }}
+      >
         + New chat
       </button>
 
@@ -310,11 +316,14 @@ export function Sidebar(props: Props) {
               return (
                 <div className="session-row" key={s.sid}>
                   <button
-                    className={`open${isActive ? " active" : ""}${s.serverKnown ? "" : " local-only"}`}
-                    disabled={isActive || isRenaming}
-                    onClick={() => onSwitchChat(s.sid)}
-                    title={label}
-                  >
+                      className={`open${isActive ? " active" : ""}${s.serverKnown ? "" : " local-only"}`}
+                      disabled={isActive || isRenaming}
+                      onClick={() => {
+                        onSwitchChat(s.sid);
+                        onClose?.();
+                      }}
+                      title={label}
+                    >
                     <span className={`dot${isActive ? " on" : ""}`} aria-hidden="true" />
                     {isRenaming ? (
                       <input

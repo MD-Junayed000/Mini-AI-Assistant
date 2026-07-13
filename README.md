@@ -67,56 +67,124 @@ The system is split into three concerns: **client layer**, **a single-process AP
 ```mermaid
 
 flowchart TB
- subgraph Clients["Clients"]
-        U["React UI<br>:5173 (vite dev)"]
-        CLI["curl / Postman"]
-  end
- subgraph API["FastAPI  :8000"]
-        L["slowapi<br>per-session limit"]
-        G["inject_guard<br>regex + entropy"]
-  end
- subgraph Pipeline["backend/pipeline/chat.py  (9 stages)"]
-        S1["1. Tool intent<br>JSON router"]
-        S2["2. Memory load"]
-        S3["3. Tool short-circuit<br>(order_status / product_search)"]
-        S4["4. Retrieve<br>ChromaDB cosine"]
-        S5["5. BM25 fallback"]
-        S6["6. Rerank<br>local cosine MiniLM-L6-v2"]
-        S7["7. Gate<br>confidence threshold"]
-        S8["8. Build prompt"]
-        S9["9. LLM call →<br>memory append"]
-        Three paths are supported: **bare-metal (local Python venv)**,
-        **Docker (API + UI)**, and **Docker + the observability profile (Tempo +
-        Prometheus + Grafana)**. The single canonical entrypoint is **`uvicorn
-        main:app`** from the repo root (`main.py` lives at the repo root, not under
-        `backend/api/`).
-        TP[("Tempo :4318<br>OTLP HTTP")]
-  end
-    U -- POST /chat --> L
-    CLI -- POST /chat --> L
-    U -- GET /healthz, /metrics --> API
-    L --> G
-    G --> S1
-    S1 -- "tool = order_status" --> S3
-        | Ollama Cloud key | LLM calls | free tier |
-    S2 --> S4
-        | Chroma Cloud credentials or `CHROMA_USE_CLOUD=false` | vector store backend | cloud or local |
-        | HF Inference token (optional) | remote embeddings or HF vision provider | free tier |
-    S4 --> CH
-    S4 -. miss .- S5
-    S5 --> CH & S6
-    S6 --> S4 & S7
-    S7 --> S8
-    S8 --> S9
-    S9 --> OLL & MG
-    Pipeline -. OTel spans .- TP
 
-    style API fill:transparent
-    style Clients fill:#e6e6e6
-        #   CHROMA_API_KEY / CHROMA_TENANT  required when CHROMA_USE_CLOUD=true
-        #   HF_INFERENCE_API_KEY   optional; only needed for remote embeddings or HF vision
-        #   MONGODB_URI            leave blank for in-proc memory fallback
-        #   CHROMA_USE_CLOUD       set false to use local .chroma/
+%% =========================
+%% Clients
+%% =========================
+
+subgraph Clients["Clients"]
+    U["React UI (Vite Dev)"]
+    CLI["curl / Postman"]
+end
+
+%% =========================
+%% API
+%% =========================
+
+subgraph API["FastAPI"]
+    L["slowapi <br/>Per-session Rate Limit"]
+    G["inject_guard <br/>Regex + Entropy"]
+end
+
+%% =========================
+%% Pipeline
+%% =========================
+
+subgraph Pipeline["chat pipeline"]
+
+    S1["1. Tool Intent<br/>JSON Router"]
+
+    S2["2. Memory Load"]
+
+    S3["3. Tool Short-Circuit<br/>order_status / product_search"]
+
+    S4["4. Retrieve<br/>ChromaDB Cosine"]
+
+    S5["5. BM25 Fallback"]
+
+    S6["6. Rerank<br/>MiniLM-L6-v2 Cosine"]
+
+    S7["7. Confidence Gate<br/>Threshold"]
+
+    S8["8. Build Prompt"]
+
+    S9["9. LLM Call<br/>Memory Append"]
+
+end
+
+%% =========================
+%% External Services
+%% =========================
+
+CH[("ChromaDB")]
+
+OLL[("LLM")]
+
+MG[("MongoDB Memory")]
+
+TP[("Tempo<br/>OTLP")]
+
+%% =========================
+%% Request Flow
+%% =========================
+
+U -->|POST /chat| L
+
+CLI -->|POST /chat| L
+
+U -->|GET /healthz| API
+
+U -->|GET /metrics| API
+
+L --> G
+
+G --> S1
+
+S1 --> S2
+
+S1 -->|tool = order_status| S3
+
+S1 -->|tool = product_search| S3
+
+S2 --> S4
+
+S4 --> CH
+
+S4 -. cache miss .-> S5
+
+S5 --> S6
+
+S6 --> S7
+
+S7 --> S8
+
+S8 --> S9
+
+S9 --> OLL
+
+S9 --> MG
+
+Pipeline -. OTel Spans .-> TP
+
+%% =========================
+%% Styling
+%% =========================
+
+style API fill:transparent
+
+style Clients fill:#e6e6e6
+
+style Pipeline fill:#f7f7f7
+
+style CH fill:#dff0ff
+
+style OLL fill:#fff2cc
+
+style MG fill:#d9ead3
+
+style TP fill:#f4cccc
+
+
 ```
 
 ### Components
@@ -125,8 +193,6 @@ flowchart TB
 |---|---|---|
 | API | `main.py` + `backend/routes/chat.py` | FastAPI app factory and HTTP routes for chat, ingest, KB admin, sessions, health, and metrics |
 | Pipeline | `backend/pipeline/chat.py` | Implements the nine-step request flow and response sanitization |
-        > The first import of `sentence-transformers` may download the local
-        > `BAAI/bge-small-en-v1.5` model; that is normal.
 | Vector Store | `backend/vector_store/{chroma_store,bm25_index}.py` | Chroma Cloud by default, local persistent fallback, and pickle-based BM25 index |
 | Tools | `backend/tools/{orders,products}.py` | Mocked, file-backed order-status and product-search tools |
 | Memory | `backend/memory.py` | Mongo-backed session memory with an in-process fallback and session registry |
@@ -377,7 +443,7 @@ pip install -r requirements.txt
 ```
 
 > The first import of `sentence-transformers` may download the local
-> `BAAI/bge-small-en-v1.5` model; that is normal.
+> `BAAI/bge-small-en-v1.5` model; 
 
 ### 6.3 Seed the vector store (one-time, idempotent)
 
@@ -947,6 +1013,8 @@ by HTTP status.
 ---
 
 ## 13. Verifying the vector store
+
+![ChromaDB effectiveness](images/chroma.png)
 
 Use these checks to confirm the Chroma collection and BM25 cache are healthy.
 

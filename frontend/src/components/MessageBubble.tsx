@@ -1,3 +1,4 @@
+import Markdown from "react-markdown";
 import type { Message } from "../api/client";
 
 interface Props {
@@ -16,7 +17,7 @@ export function MessageBubble({ message, pending = false }: Props) {
       <div className="bubble">
         <div className="bubble-content">
           {message.content && message.content.length > 0 ? (
-            message.content
+            <Markdown>{message.content}</Markdown>
           ) : isPending ? (
             <div className="gen-skeleton" aria-label="Generating response">
               <span className="dot1" />

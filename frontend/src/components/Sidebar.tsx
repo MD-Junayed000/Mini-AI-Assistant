@@ -183,7 +183,7 @@ export function Sidebar(props: Props) {
   const totalChunks = kb?.total_chunks ?? 0;
 
   return (
-    <aside className="sidebar">
+   <aside className={`sidebar ${isOpen ? "open" : ""}`}>
       <button className="new-chat-btn primary" onClick={onNewChat}>
         + New chat
       </button>

@@ -163,6 +163,34 @@ export default function App() {
     return out;
   }, [mergedSessions]);
 
+  // === NEW: Mobile Sidebar State ===
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const [titles, setTitles] = useState<Record<string, string>>(() =>
+    readJSON<Record<string, string>>(TITLES_KEY, {}),
+  );
+  const [knownSids, setKnownSids] = useState<string[]>(() =>
+    readJSON<string[]>(KNOWN_SIDS_KEY, []),
+  );
+  const [serverSessions, setServerSessions] = useState<SessionSummary[]>([]);
+  const [touchTick, setTouchTick] = useState(0);
+  const refreshTimer = useRef<number | null>(null);
+
+  // Close sidebar when switching chat on mobile
+  const handleSwitchChat = useCallback((sid: string | null) => {
+    if (!sid) {
+      setActiveSid(null);
+      return;
+    }
+    setActiveSid((current) => {
+      if (current && current !== sid) {
+        setKnownSids((sids) => (sids.includes(current) ? sids : [current, ...sids]));
+      }
+      return sid;
+    });
+    setSidebarOpen(false); // Close sidebar on mobile after selection
+  }, []);
+
   return (
     <div className="app">
       <Sidebar
@@ -176,8 +204,15 @@ export default function App() {
         onSessionsTouched={handleSessionsTouched}
         onKbChanged={handleKbChanged}
         refreshTrigger={touchTick}
+        isOpen={sidebarOpen}           // ← NEW PROP
+        onClose={() => setSidebarOpen(false)} // ← NEW PROP
       />
-      <ChatPane sessionId={activeSid} onSessionsTouched={handleSessionsTouched} />
+     <ChatPane 
+        sessionId={activeSid} 
+        onSessionsTouched={handleSessionsTouched}
+        // Add mobile menu button in ChatPane header
+        onMenuClick={() => setSidebarOpen(true)}   // ← Pass this down
+      />
     </div>
   );
 }
